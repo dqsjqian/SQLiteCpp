@@ -24,14 +24,6 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/SQLiteCpp.pc DESTINATION ${CMAKE_INSTA
 option(SQLITECPP_BUNDLE_SQLITE "Compile the bundled SQLite amalgamation (vendor/sqlite) for tests" ON)
 include(CTest)
 if(BUILD_TESTING)
-    if(FORGEDEPS_TEST_ENVIRONMENT)
-        find_package(Python3 3.14 REQUIRED COMPONENTS Interpreter)
-        set(ForgeDeps_PYTHON_EXECUTABLE "${Python3_EXECUTABLE}")
-        execute_process(COMMAND "${Python3_EXECUTABLE}" -m forgedeps cmake-dir
-            OUTPUT_VARIABLE _modules OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
-        include("${_modules}/ForgeDeps.cmake")
-        forgedeps_use_environment(FILE "${FORGEDEPS_TEST_ENVIRONMENT}")
-    endif()
     if(SQLITECPP_BUNDLE_SQLITE)
         add_library(sqlite3_core STATIC vendor/sqlite/sqlite3.c)
         target_include_directories(sqlite3_core PUBLIC

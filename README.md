@@ -39,9 +39,10 @@ int main() {
 - **C++23 throughout.** `std::string_view`, `std::optional`, `std::variant`,
   `std::span` BLOB binding, the `sqlite::bindable` concept, `[[nodiscard]]`
   result accessors and a hard `#error` below C++23.
-- **Bundled SQLite.** `vendor/sqlite` carries the official SQLite 3.54.1
-  amalgamation (SHA3-256 verified against sqlite.org); the test suite links it
-  by default.
+- **Bundled SQLite, zero build dependencies.** `vendor/sqlite` carries the
+  official SQLite 3.54.1 amalgamation (SHA3-256 verified against sqlite.org);
+  CMake compiles it for the test suite by default. Clone, configure, build —
+  no package manager, no downloaded toolchain, no network access required.
 
 ## Bulk insert and transactions
 
@@ -100,7 +101,6 @@ UndefinedBehaviorSanitizer in CI.
 | `include/SQLiteCpp/detail/` | value traits, statement cache, UTF conversion |
 | `benchmarks/` | micro-benchmarks |
 | `vendor/sqlite/` | bundled SQLite 3.54.1 amalgamation |
-| `scripts/` | ForgeDeps build validation |
 | `tests/` | regression suite and installed-consumer project |
 
 ## Requirements
@@ -119,8 +119,7 @@ cmake --install build --prefix /path/to/sdk
 ```
 
 Installed consumers can use `find_package(SQLiteCpp CONFIG REQUIRED)` and link
-`SQLiteCpp::SQLiteCpp` together with their SQLite target. ForgeRecipes can
-supply both libraries through a ForgeDeps workspace.
+`SQLiteCpp::SQLiteCpp` together with their SQLite target.
 
 ## License
 
