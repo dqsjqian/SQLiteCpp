@@ -1,0 +1,15 @@
+PROJECT_NAME           = SQLiteCpp
+PROJECT_BRIEF          = "Modern C++23 wrapper for SQLite"
+OUTPUT_DIRECTORY       = doxygen
+INPUT                  = ../include ../README.md
+RECURSIVE              = YES
+FILE_PATTERNS          = *.h *.md
+EXCLUDE_PATTERNS       = */lists/* */sqlcipher.h
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+GENERATE_LATEX         = NO
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
+JAVADOC_AUTOBRIEF      = YES

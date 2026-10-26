@@ -1,4 +1,5 @@
 #include <SQLiteCpp.h>
+#include <filesystem>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -152,4 +153,229 @@ int main() {
     restored << "SELECT COUNT(*) FROM item" >> restored_count;
     db << "SELECT COUNT(*) FROM item" >> result;
     CHECK(restored_count == result);
+    // backup copies a database into another connection
+    {
+        sqlite::database source(":memory:");
+        source << "CREATE TABLE copied (v TEXT)";
+        source << "INSERT INTO copied VALUES (?)" << "payload";
+        sqlite::database target(":memory:");
+        sqlite::backup bk(source, target);
+        bk.run();
+        CHECK(bk.done());
+        bk.finish();
+        std::string copied;
+        target << "SELECT v FROM copied" >> copied;
+        CHECK(copied == "payload");
+    }
+
+    // progress handler runs during long statements and can abort them
+    {
+        int calls = 0;
+        db.progress_handler([&calls] { ++calls; return 0; }, 50);
+        db << "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 500)"
+              " SELECT COUNT(*) FROM c" >> result;
+        CHECK(result == 500);
+        db.clear_progress_handler();
+        CHECK(calls > 0);
+
+        bool aborted = false;
+        db.progress_handler([] { return 1; }, 1);
+        try {
+            db << "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 500)"
+                  " SELECT COUNT(*) FROM c" >> result;
+        } catch(const sqlite::errors::interrupt &) {
+            aborted = true;
+        }
+        db.clear_progress_handler();
+        CHECK(aborted);
+    }
+    // busy timeout is reflected by the connection
+    db.busy_timeout(250);
+    CHECK(db.pragma("PRAGMA busy_timeout") == "250");
+
+    // db_config toggles, foreign keys enforced
+    db.configure(sqlite::config_flag::foreign_keys, true);
+    CHECK(db.configured(sqlite::config_flag::foreign_keys));
+    db << "CREATE TABLE parent (id INTEGER PRIMARY KEY)";
+    db << "CREATE TABLE child (pid INTEGER REFERENCES parent(id))";
+    bool fk_violation = false;
+    try {
+        db.execute("INSERT INTO child VALUES (123)");
+    } catch(const sqlite::sqlite_exception &) {
+        fk_violation = true;
+    }
+    CHECK(fk_violation);
+    db.configure(sqlite::config_flag::foreign_keys, false);
+
+    // savepoints nest: an inner rollback keeps the outer work
+    db << "CREATE TABLE sp (v INTEGER)";
+    {
+        sqlite::savepoint outer(db, "outer");
+        db << "INSERT INTO sp VALUES (1)";
+        {
+            sqlite::savepoint inner(db, "inner");
+            db << "INSERT INTO sp VALUES (2)";
+            // leaves scope without commit: rolled back
+        }
+        db << "INSERT INTO sp VALUES (3)";
+        outer.commit();
+    }
+    db << "SELECT COUNT(*) FROM sp" >> result;
+    CHECK(result == 2);
+    db << "SELECT SUM(v) FROM sp" >> result;
+    CHECK(result == 4);
+    // zero-copy binding keeps the caller's storage, no copy is made
+    const std::string_view stable = "zero-copy";
+    std::string zero_copy_text;
+    db << "SELECT ?" << sqlite::no_copy(stable) >> zero_copy_text;
+    CHECK(zero_copy_text == "zero-copy");
+
+    const std::vector<unsigned char> zero_copy_bytes{1, 2, 3};
+    std::vector<unsigned char> zero_copy_out;
+    db << "SELECT ?" << sqlite::no_copy(zero_copy_bytes) >> zero_copy_out;
+    CHECK(zero_copy_out == zero_copy_bytes);
+
+    // column metadata
+    db << "CREATE TABLE meta (id INTEGER, label TEXT)";
+    auto meta = db << "SELECT id, label FROM meta";
+    CHECK(meta.column_count() == 2);
+    CHECK(meta.column_name(0) == "id");
+    CHECK(meta.column_declared_type(0) == "INTEGER");
+    CHECK(meta.column_declared_type(1) == "TEXT");
+#ifdef SQLITE_ENABLE_COLUMN_METADATA
+    CHECK(meta.column_table_name(1) == "meta");
+    CHECK(meta.column_origin_name(1) == "label");
+#endif
+    meta.execute();
+    // incremental BLOB I/O: read and patch a 1 KiB BLOB in chunks
+    db << "CREATE TABLE blobs (id INTEGER PRIMARY KEY, data BLOB)";
+    std::vector<unsigned char> large(1024);
+    for(int i = 0; i < 1024; ++i) large[static_cast<std::size_t>(i)] = static_cast<unsigned char>(i % 251);
+    db << "INSERT INTO blobs VALUES (1, ?)" << large;
+    {
+        sqlite::blob handle(db, "blobs", "data", 1);
+        CHECK(handle.size() == 1024);
+        std::vector<unsigned char> head(16, 0);
+        handle.read(std::span<unsigned char>(head.data(), head.size()), 0);
+        CHECK(std::equal(head.begin(), head.end(), large.begin()));
+        const std::vector<unsigned char> patch{9, 9, 9};
+        handle.write(std::span<const unsigned char>(patch.data(), patch.size()), 100);
+    }
+    std::vector<unsigned char> patched;
+    db << "SELECT data FROM blobs WHERE id = 1" >> patched;
+    CHECK(patched.size() == 1024 && patched[100] == 9 && patched[101] == 9 && patched[103] == large[103]);
+    // hooks: update fires per row, commit and rollback per transaction
+    {
+        int updates = 0;
+        int commits = 0;
+        int rollbacks = 0;
+        db.on_update([&updates](int, std::string, std::string, sqlite3_int64) { ++updates; });
+        db.on_commit([&commits] { ++commits; return 0; });
+        db.on_rollback([&rollbacks] { ++rollbacks; });
+        db << "CREATE TABLE hooked (v INTEGER)";
+        db.execute("INSERT INTO hooked VALUES (1)");
+        CHECK(updates == 1);
+        {
+            sqlite::transaction tx(db);
+            db.execute("INSERT INTO hooked VALUES (2)");
+            tx.commit();
+        }
+        CHECK(commits > 0);
+        {
+            sqlite::transaction tx(db);
+            db.execute("INSERT INTO hooked VALUES (3)");
+            // rolled back on scope exit
+        }
+        CHECK(rollbacks > 0);
+        db.on_update({});
+        db.on_commit({});
+        db.on_rollback({});
+    }
+
+    // explain returns the query plan
+    db << "CREATE TABLE planned (a INTEGER, b INTEGER)";
+    db << "CREATE INDEX planned_a ON planned(a)";
+    const auto plan = db.explain("SELECT b FROM planned WHERE a = 1");
+    CHECK(!plan.empty());
+
+    // connection diagnostics
+    CHECK(db.cache_used() > 0);
+    CHECK(db.schema_used() > 0);
+
+    // load_extension reports a clear error for a missing library
+    {
+        bool load_failed = false;
+        try {
+            db.configure(sqlite::config_flag::load_extension, true);
+            db.load_extension("/nonexistent/sqlitecpp-extension.so");
+        } catch(const sqlite::sqlite_exception &) {
+            load_failed = true;
+        }
+        db.configure(sqlite::config_flag::load_extension, false);
+        CHECK(load_failed);
+    }
+
+    // file header diagnostics on a real on-disk database
+    {
+        const std::string path = (std::filesystem::temp_directory_path()
+                                  / "sqlitecpp-header-test.db").string();
+        std::remove(path.c_str());
+        {
+            sqlite::database file_db(path);
+            file_db << "PRAGMA user_version = 42";
+            file_db << "CREATE TABLE header_probe (v INTEGER)";
+        }
+        const auto info = sqlite::read_header(path);
+        CHECK(info.valid());
+        CHECK(info.user_version == 42);
+        CHECK(info.page_size >= 512);
+        CHECK(sqlite::has_sqlite_header(path));
+        std::remove(path.c_str());
+        CHECK(!sqlite::has_sqlite_header(path));
+    }
+    // window function: running total over an unbounded frame
+    {
+        struct running_total {
+            long long total = 0;
+        };
+        db.define_window("wtot",
+            [](running_total &state, long long value) { state.total += value; },
+            [](running_total &state, long long value) { state.total -= value; },
+            [](running_total &state) { return state.total; },
+            [](running_total &state) { return state.total; });
+        db << "CREATE TABLE win (v INTEGER)";
+        db.execute_many("INSERT INTO win VALUES (?)", std::vector<std::tuple<int>>{{1}, {2}, {3}});
+
+        std::vector<long long> totals;
+        db << "SELECT wtot(v) OVER (ORDER BY v ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
+              " FROM win" >> [&totals](long long total) { totals.push_back(total); };
+        CHECK(totals.size() == 3 && totals[0] == 1 && totals[2] == 6);
+    }
+
+    // window function: sliding frame exercises xInverse
+    {
+        struct sliding_sum {
+            long long total = 0;
+        };
+        db.define_window("wslide",
+            [](sliding_sum &state, long long value) { state.total += value; },
+            [](sliding_sum &state, long long value) { state.total -= value; },
+            [](sliding_sum &state) { return state.total; },
+            [](sliding_sum &state) { return state.total; });
+
+        std::vector<long long> sliding;
+        db << "SELECT wslide(v) OVER (ORDER BY v ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)"
+              " FROM win" >> [&sliding](long long total) { sliding.push_back(total); };
+        CHECK(sliding.size() == 3 && sliding[0] == 1 && sliding[1] == 3 && sliding[2] == 5);
+    }
+    // typed SQL literal: length known at compile time, empty rejected
+    {
+        using namespace sqlite::literals;
+        int literal_value = 0;
+        db << "SELECT 42"_sql >> literal_value;
+        CHECK(literal_value == 42);
+
+        CHECK("SELECT 1"_sql.view().size() == 8);
+        CHECK(std::string_view("SELECT 1"_sql) == "SELECT 1");
+    }
 }

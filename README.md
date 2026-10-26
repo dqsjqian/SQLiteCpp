@@ -39,10 +39,35 @@ int main() {
 - **C++23 throughout.** `std::string_view`, `std::optional`, `std::variant`,
   `std::span` BLOB binding, the `sqlite::bindable` concept, `[[nodiscard]]`
   result accessors and a hard `#error` below C++23.
+- **Concurrency and control.** `busy_timeout`, nested `savepoint`, `configure`
+  for foreign keys / defensive mode, `interrupt` and a progress handler.
+- **Diagnostics.** `explain` query plans, `cache_used` / `schema_used`,
+  `read_header` decodes the 100-byte file header without a connection, and
+  update / commit / rollback hooks plus `load_extension` are wired up.
+- **Data channels.** `blob` streams a BLOB in chunks, `no_copy` binds with
+  `SQLITE_STATIC`, and column metadata (name, declared type, origin table) is
+  available on prepared statements.
+- **SQL functions.** Scalar, aggregate and window functions, registered from
+  plain lambdas.
 - **Bundled SQLite, zero build dependencies.** `vendor/sqlite` carries the
   official SQLite 3.54.1 amalgamation (SHA3-256 verified against sqlite.org);
   CMake compiles it for the test suite by default. Clone, configure, build —
   no package manager, no downloaded toolchain, no network access required.
+
+## API overview
+
+| Area | Entry points |
+|---|---|
+| Connection | `database`, `sqlite_config`, `config_flag`, `busy_timeout`, `configure`, `interrupt`, `progress_handler`, `load_extension` |
+| Statements | `operator<<`, `operator>>`, `execute`, `execute_many`, `try_execute`, `row.as<Ts...>()`, `column_name` / `column_declared_type` / `column_table_name` |
+| Transactions | `transaction`, `savepoint` |
+| Results | `select<Record>(...)`, `as<Ts...>()`, `pragma`, `explain` |
+| Data | `blob` (incremental I/O), `no_copy` (SQLITE_STATIC), `serialize` / `deserialize` |
+| Functions | `define` (scalar / aggregate / flags), `define_window` |
+| Files | `read_header`, `has_sqlite_header` |
+| Hooks | `on_update`, `on_commit`, `on_rollback` |
+| Literals | `"SELECT 1"_sql` |
+| Diagnostics | `cache_used`, `schema_used` |
 
 ## Bulk insert and transactions
 
@@ -82,8 +107,23 @@ bundled SQLite 3.54.1:
 | 100k SELECT via `operator>>` | 285.3 ms (2.85 µs/op) | 121.3 ms (1.21 µs/op) | 2.35x |
 | 100k INSERT via `execute_many` | — | 61.3 ms (0.61 µs/op) | 3.71x |
 
+Wrapper overhead against a hand-written C API loop, same workload, statement
+reused in both cases:
+
+| Path | Raw C API | SQLiteCpp | Overhead |
+|---|---|---|---|
+| 100k single-row INSERT | 23.3 ms | 30.4 ms | +30% |
+| 100k single-row SELECT | 20.0 ms | 29.4 ms | +47% |
+| 100k batched INSERT | — | 23.0 ms | faster than per-row C |
+
+The per-row gap is the cost of the expression syntax: one binder object, one
+cache lookup and a second step to verify a single-row result really is single.
+`execute_many` skips all of that and beats the per-row C loop. As statements
+grow wider the relative gap shrinks; `benchmarks/benchmark.cc` reproduces both.
+
 The full suite also runs clean under AddressSanitizer and
-UndefinedBehaviorSanitizer in CI.
+UndefinedBehaviorSanitizer, and CI adds clang-tidy, lcov coverage, a 30-second
+libFuzzer run and the Doxygen API docs.
 
 ## Layout
 
@@ -99,6 +139,12 @@ UndefinedBehaviorSanitizer in CI.
 | `include/SQLiteCpp/transaction.h` | RAII transactions |
 | `include/SQLiteCpp/sql_function.h` | SQL function registration |
 | `include/SQLiteCpp/detail/` | value traits, statement cache, UTF conversion |
+| `include/SQLiteCpp/backup.h` | online backup between connections |
+| `include/SQLiteCpp/blob.h` | incremental BLOB I/O |
+| `include/SQLiteCpp/diagnostics.h` | database file header decoding |
+| `include/SQLiteCpp/literals.h` | `_sql` literals |
+| `fuzz/` | libFuzzer target |
+| `docs/` | Doxygen configuration |
 | `benchmarks/` | micro-benchmarks |
 | `vendor/sqlite/` | bundled SQLite 3.54.1 amalgamation |
 | `tests/` | regression suite and installed-consumer project |
@@ -122,6 +168,7 @@ newer; older versions are rejected at compile time with a clear message.
 | Windows MinGW | GCC UCRT64, `-Werror` | build + tests |
 | iOS | AppleClang, iOS simulator arm64 | cross-compile |
 | Android | NDK clang, arm64-v8a and armeabi-v7a | cross-compile |
+| Quality | clang-tidy, lcov, libFuzzer, Doxygen | gates |
 
 Every public header is also compiled on its own, and the suite runs under
 AddressSanitizer and UndefinedBehaviorSanitizer.

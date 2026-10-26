@@ -16,3 +16,7 @@
 #include "SQLiteCpp/sql_function.h"
 #include "SQLiteCpp/database.h"
 #include "SQLiteCpp/transaction.h"
+#include "SQLiteCpp/backup.h"
+#include "SQLiteCpp/blob.h"
+#include "SQLiteCpp/diagnostics.h"
+#include "SQLiteCpp/literals.h"

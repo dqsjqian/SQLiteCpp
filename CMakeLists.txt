@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(SQLiteCpp VERSION 1.0.0 LANGUAGES C CXX)
+project(SQLiteCpp VERSION 1.1.0 LANGUAGES C CXX)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 add_library(SQLiteCpp INTERFACE)
@@ -28,10 +28,15 @@ install(FILES vendor/sqlite/sqlite3.c vendor/sqlite/sqlite3.h vendor/sqlite/sqli
         DESTINATION ${CMAKE_INSTALL_DATADIR}/SQLiteCpp/sqlite)
 configure_file(cmake/SQLiteCpp.pc.in ${CMAKE_CURRENT_BINARY_DIR}/SQLiteCpp.pc @ONLY)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/SQLiteCpp.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+option(SQLITECPP_COVERAGE "Instrument the regression test for coverage" OFF)
+option(SQLITECPP_BUILD_FUZZERS "Build the libFuzzer target (clang only)" OFF)
+
 include(CTest)
 if(BUILD_TESTING)
     # SQLite comes from vendor/sqlite only: one version, the newest.
     add_library(sqlite3_core STATIC vendor/sqlite/sqlite3.c)
+    # Column metadata enables sqlite3_column_table_name / _origin_name.
+    target_compile_definitions(sqlite3_core PUBLIC SQLITE_ENABLE_COLUMN_METADATA=1)
     target_include_directories(sqlite3_core PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/vendor/sqlite>)
     if(MSVC)
@@ -46,6 +51,22 @@ if(BUILD_TESTING)
     target_link_libraries(sqlitecpp_regression PRIVATE SQLiteCpp::SQLiteCpp ${SQLITECPP_SQLITE_TARGET})
     target_compile_definitions(sqlitecpp_regression PRIVATE SQLITECPP_BUNDLED_SQLITE=1)
     add_test(NAME sqlitecpp-maintained-api COMMAND sqlitecpp_regression)
+    if(SQLITECPP_COVERAGE)
+        target_compile_options(sqlitecpp_regression PRIVATE --coverage -O0 -g)
+        target_link_options(sqlitecpp_regression PRIVATE --coverage)
+    endif()
+
+    if(SQLITECPP_BUILD_FUZZERS)
+        # Requires the libFuzzer runtime; Xcode's AppleClang does not ship it,
+        # and neither does MSVC. Linux Clang does.
+        if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR APPLE)
+            message(WARNING "SQLITECPP_BUILD_FUZZERS needs Clang with libFuzzer (not AppleClang/MSVC)")
+        endif()
+        add_executable(sqlitecpp_fuzz_sql fuzz/fuzz_sql.cc)
+        target_link_libraries(sqlitecpp_fuzz_sql PRIVATE SQLiteCpp::SQLiteCpp ${SQLITECPP_SQLITE_TARGET})
+        target_compile_options(sqlitecpp_fuzz_sql PRIVATE -fsanitize=fuzzer,address -g)
+        target_link_options(sqlitecpp_fuzz_sql PRIVATE -fsanitize=fuzzer,address)
+    endif()
 
     add_executable(sqlitecpp_benchmark benchmarks/benchmark.cc)
     target_compile_features(sqlitecpp_benchmark PRIVATE cxx_std_23)

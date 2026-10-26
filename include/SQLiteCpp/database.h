@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstring>
+#include <functional>
 #include <span>
 #include <vector>
 #include <memory>
@@ -57,20 +58,53 @@ namespace sqlite {
 		Encoding encoding = Encoding::ANY;
 		// Number of prepared statements kept alive for reuse. 0 disables reuse.
 		std::size_t statement_cache_size = 32;
+		// Milliseconds to wait for a locked table before reporting SQLITE_BUSY.
+		int busy_timeout_ms = 0;
+	};
+
+	// Connection-level toggles exposed through sqlite3_db_config.
+	enum class config_flag : int {
+		foreign_keys = SQLITE_DBCONFIG_ENABLE_FKEY,
+		triggers = SQLITE_DBCONFIG_ENABLE_TRIGGER,
+		views = SQLITE_DBCONFIG_ENABLE_VIEW,
+		defensive = SQLITE_DBCONFIG_DEFENSIVE,
+		trusted_schema = SQLITE_DBCONFIG_TRUSTED_SCHEMA,
+		writable_schema = SQLITE_DBCONFIG_WRITABLE_SCHEMA,
+		load_extension = SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION,
+		scanstatus = SQLITE_DBCONFIG_STMT_SCANSTATUS
 	};
 
 	class database {
 	protected:
+		// Per-connection callbacks. Kept alive by the connection deleter so a
+		// registered hook never outlives its context.
+		struct connection_state {
+			std::function<int()> progress;
+			std::function<void(int action, std::string database, std::string table,
+			                   sqlite3_int64 rowid)> update;
+			std::function<int()> commit;
+			std::function<void()> rollback;
+		};
+
 		std::shared_ptr<sqlite3> _db;
 		std::shared_ptr<detail::statement_cache> _statements;
+		std::shared_ptr<connection_state> _state;
 
 	public:
 		database(const std::string &db_name, const sqlite_config &config = {}): _db(nullptr) {
 			sqlite3* tmp = nullptr;
 			auto ret = sqlite3_open_v2(db_name.data(), &tmp, static_cast<int>(config.flags), config.zVfs);
-			_db = std::shared_ptr<sqlite3>(tmp, [=](sqlite3* ptr) { sqlite3_close_v2(ptr); }); // this will close the connection eventually when no longer needed.
+			_state = std::make_shared<connection_state>();
+			// The deleter keeps the progress state alive exactly as long as the
+			// connection, so a registered handler never outlives its context.
+			auto state_keepalive = _state;
+			_db = std::shared_ptr<sqlite3>(tmp, [state_keepalive](sqlite3* ptr) {
+				(void)state_keepalive;
+				sqlite3_close_v2(ptr);
+			});
 			if(ret != SQLITE_OK) errors::throw_sqlite_error(_db ? sqlite3_extended_errcode(_db.get()) : ret, {}, sqlite3_errmsg(_db.get()));
 			sqlite3_extended_result_codes(_db.get(), true);
+			if(config.busy_timeout_ms > 0) sqlite3_busy_timeout(_db.get(), config.busy_timeout_ms);
 			_statements = std::make_shared<detail::statement_cache>(_db, config.statement_cache_size);
 			if(config.encoding == Encoding::UTF16)
 				*this << R"(PRAGMA encoding = "UTF-16";)";
@@ -83,7 +117,10 @@ namespace sqlite {
 
 		database(std::shared_ptr<sqlite3> db, std::size_t statement_cache_size = 32):
 			_db(std::move(db)),
-			_statements(std::make_shared<detail::statement_cache>(_db, statement_cache_size)) {}
+			_statements(std::make_shared<detail::statement_cache>(_db, statement_cache_size)),
+			// Callbacks registered on this connection live at most as long as
+			// this database object; a shared raw handle cannot extend them.
+			_state(std::make_shared<connection_state>()) {}
 
 		database_binder operator<<(str_ref sql) {
 			return database_binder(_db, _statements, sql);
@@ -94,6 +131,127 @@ namespace sqlite {
 		}
 
 		connection_type connection() const { return _db; }
+
+		// Waits up to `milliseconds` for a locked table instead of reporting
+		// SQLITE_BUSY immediately. Essential for multi-threaded writers.
+		void busy_timeout(int milliseconds) {
+			if(int rc = sqlite3_busy_timeout(_db.get(), milliseconds); rc != SQLITE_OK)
+				errors::throw_sqlite_error(rc, {}, sqlite3_errmsg(_db.get()));
+		}
+
+		// Toggles a connection-level behaviour (sqlite3_db_config), e.g.
+		// configure(config_flag::foreign_keys, true).
+		void configure(config_flag flag, bool enable) {
+			int current = 0;
+			if(int rc = sqlite3_db_config(_db.get(), static_cast<int>(flag), enable ? 1 : 0, &current);
+			   rc != SQLITE_OK)
+				errors::throw_sqlite_error(rc, {}, sqlite3_errmsg(_db.get()));
+		}
+
+		// Reads back a connection-level toggle: -1 when it cannot be queried.
+		bool configured(config_flag flag) {
+			int current = 0;
+			if(sqlite3_db_config(_db.get(), static_cast<int>(flag), -1, &current) != SQLITE_OK)
+				return false;
+			return current != 0;
+		}
+
+		// Aborts any statement currently running on this connection from
+		// another thread (sqlite3_interrupt).
+		void interrupt() {
+			sqlite3_interrupt(_db.get());
+		}
+
+		// Installs a progress callback invoked every `instructions` virtual
+		// machine instructions. Returning non-zero aborts the running
+		// statement with SQLITE_INTERRUPT.
+		void progress_handler(std::function<int()> handler, int instructions = 1000) {
+			if(!_state) return;
+			_state->progress = std::move(handler);
+			if(_state->progress)
+				sqlite3_progress_handler(_db.get(), instructions,
+				                         &database::progress_trampoline, _state.get());
+			else
+				sqlite3_progress_handler(_db.get(), 0, nullptr, nullptr);
+		}
+
+		void clear_progress_handler() {
+			progress_handler({}, 0);
+		}
+
+		// Called after INSERT / UPDATE / DELETE. action is SQLITE_INSERT,
+		// SQLITE_UPDATE or SQLITE_DELETE.
+		void on_update(std::function<void(int, std::string, std::string, sqlite3_int64)> handler) {
+			if(!_state) return;
+			_state->update = std::move(handler);
+			sqlite3_update_hook(_db.get(), _state->update ? &database::update_trampoline : nullptr,
+			                    _state->update ? _state.get() : nullptr);
+		}
+
+		// Returning non-zero from the handler turns the commit into a rollback.
+		void on_commit(std::function<int()> handler) {
+			if(!_state) return;
+			_state->commit = std::move(handler);
+			sqlite3_commit_hook(_db.get(), _state->commit ? &database::commit_trampoline : nullptr,
+			                    _state->commit ? _state.get() : nullptr);
+		}
+
+		void on_rollback(std::function<void()> handler) {
+			if(!_state) return;
+			_state->rollback = std::move(handler);
+			sqlite3_rollback_hook(_db.get(), _state->rollback ? &database::rollback_trampoline : nullptr,
+			                      _state->rollback ? _state.get() : nullptr);
+		}
+
+		// Query plan lines for a statement (EXPLAIN QUERY PLAN).
+		std::vector<std::string> explain(str_ref sql) {
+			std::vector<std::string> plan;
+			auto statement = *this << ("EXPLAIN QUERY PLAN " + std::string(sql));
+			for(auto &&row : statement) {
+				int id = 0;
+				int parent = 0;
+				int not_used = 0;
+				std::string detail;
+				row >> id >> parent >> not_used >> detail;
+				plan.push_back(detail);
+			}
+			return plan;
+		}
+
+		// Loads a SQLite extension (sqlite3_load_extension). Extension loading
+		// must be enabled first: configure(config_flag::load_extension, true).
+		void load_extension(str_ref file, str_ref entry = {}) {
+			const std::string path(file);
+			const std::string symbol(entry);
+			char *error = nullptr;
+			const int rc = sqlite3_load_extension(_db.get(), path.c_str(),
+			                                      entry.empty() ? nullptr : symbol.c_str(), &error);
+			if(rc != SQLITE_OK) {
+				const std::string message = error ? error : sqlite3_errmsg(_db.get());
+				sqlite3_free(error);
+				errors::throw_sqlite_error(rc, "load_extension", message.c_str());
+			}
+		}
+
+		// Bytes currently used by this connection's pager cache.
+		sqlite3_int64 cache_used() const {
+			int current = 0;
+			int highwater = 0;
+			if(sqlite3_db_status(_db.get(), SQLITE_DBSTATUS_CACHE_USED, &current, &highwater, 0)
+			   != SQLITE_OK)
+				return 0;
+			return current;
+		}
+
+		// Bytes currently held by this connection's schema cache.
+		sqlite3_int64 schema_used() const {
+			int current = 0;
+			int highwater = 0;
+			if(sqlite3_db_status(_db.get(), SQLITE_DBSTATUS_SCHEMA_USED, &current, &highwater, 0)
+			   != SQLITE_OK)
+				return 0;
+			return current;
+		}
 
 		// Reads every row into a Record, assigning the columns to the given
 		// member pointers in order.
@@ -185,8 +343,11 @@ namespace sqlite {
 			requires std::ranges::input_range<Range> &&
 			         detail::tuple_like<std::ranges::range_value_t<Range>>
 		sqlite3_int64 execute_many(str_ref sql, const Range& rows) {
-			auto slot = _statements->acquire(sql);
-			sqlite3_stmt *stmt = slot->stmt.get();
+			auto borrowed = _statements->acquire(sql);
+			detail::statement_slot *slot = borrowed.first;
+			std::unique_ptr<detail::statement_slot> owned;
+			if(!borrowed.second) owned.reset(slot);
+			sqlite3_stmt *stmt = slot ? slot->stmt.get() : nullptr;
 			sqlite3_int64 executed = 0;
 			try {
 				if(stmt) {
@@ -205,13 +366,49 @@ namespace sqlite {
 					}
 				}
 			} catch(...) {
-				_statements->release(slot);
+				if(!owned) _statements->release(slot);
 				throw;
 			}
-			_statements->release(slot);
+			if(!owned) _statements->release(slot);
 			return executed;
 		}
 
+	private:
+		static int progress_trampoline(void *context) {
+			auto *state = static_cast<connection_state *>(context);
+			return state && state->progress ? state->progress() : 0;
+		}
+
+		static void update_trampoline(void *context, int action, const char *database_name,
+		                              const char *table_name, sqlite3_int64 rowid) {
+			auto *state = static_cast<connection_state *>(context);
+			if(state && state->update) {
+				try {
+					state->update(action,
+					              database_name ? database_name : "",
+					              table_name ? table_name : "", rowid);
+				} catch(...) {
+					// A hook must never propagate into SQLite's C frames.
+				}
+			}
+		}
+
+		static int commit_trampoline(void *context) {
+			auto *state = static_cast<connection_state *>(context);
+			return state && state->commit ? state->commit() : 0;
+		}
+
+		static void rollback_trampoline(void *context) {
+			auto *state = static_cast<connection_state *>(context);
+			if(state && state->rollback) {
+				try {
+					state->rollback();
+				} catch(...) {
+				}
+			}
+		}
+
+	public:
 		sqlite3_int64 last_insert_rowid() const {
 			return sqlite3_last_insert_rowid(_db.get());
 		}
@@ -253,6 +450,43 @@ namespace sqlite {
 				delete static_cast<decltype(funcPtr)>(ptr);
 			}))
 				errors::throw_sqlite_error(result, {}, sqlite3_errmsg(_db.get()));
+		}
+
+		// Registers a SQL window function: step adds a row to the frame,
+		// inverse removes one, value reports the current frame value and final
+		// flushes at the end. All four take the shared state as their first
+		// argument.
+		template <typename StepFunction, typename InverseFunction,
+		          typename ValueFunction, typename FinalFunction>
+		void define_window(const std::string &name,
+		                   StepFunction&& step, InverseFunction&& inverse,
+		                   ValueFunction&& value, FinalFunction&& final,
+		                   function_flags flags = function_flags::none) {
+			typedef utility::function_traits<StepFunction> traits;
+			using ContextType = typename std::remove_reference<
+					typename traits::template argument<0>>::type;
+			using Functions = std::tuple<
+					typename std::remove_reference<StepFunction>::type,
+					typename std::remove_reference<InverseFunction>::type,
+					typename std::remove_reference<ValueFunction>::type,
+					typename std::remove_reference<FinalFunction>::type>;
+			static constexpr std::size_t arity = traits::arity - 1;
+
+			auto funcs = new Functions(std::forward<StepFunction>(step),
+			                           std::forward<InverseFunction>(inverse),
+			                           std::forward<ValueFunction>(value),
+			                           std::forward<FinalFunction>(final));
+			if(int result = sqlite3_create_window_function(
+					_db.get(), name.c_str(), static_cast<int>(arity),
+					SQLITE_UTF8 | static_cast<int>(flags), funcs,
+					sql_function_binder::window_step<ContextType, arity, Functions>,
+					sql_function_binder::window_final<ContextType, Functions>,
+					sql_function_binder::window_value<ContextType, Functions>,
+					sql_function_binder::window_inverse<ContextType, arity, Functions>,
+					[](void *ptr) { delete static_cast<Functions *>(ptr); })) {
+				delete funcs;
+				errors::throw_sqlite_error(result, {}, sqlite3_errmsg(_db.get()));
+			}
 		}
 
 		template <typename StepFunction, typename FinalFunction>

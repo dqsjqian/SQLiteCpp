@@ -161,6 +161,42 @@ namespace sqlite {
 	}
 #endif
 
+	// ---- zero-copy binding ------------------------------------------------
+	//
+	// no_copy() binds with SQLITE_STATIC: SQLite keeps the pointer instead of
+	// copying. The bytes must stay alive and unchanged until the statement is
+	// stepped or the parameter rebound. Resetting a statement does not clear
+	// the binding, so the backing storage must outlive that too.
+
+	struct no_copy_text {
+		std::string_view text;
+	};
+
+	struct no_copy_blob {
+		std::span<const unsigned char> bytes;
+	};
+
+	inline no_copy_text no_copy(str_ref text) { return no_copy_text{text}; }
+	inline no_copy_text no_copy(const std::string &text) { return no_copy_text{text}; }
+	inline no_copy_blob no_copy(std::span<const unsigned char> bytes) { return no_copy_blob{bytes}; }
+	inline no_copy_blob no_copy(const std::vector<unsigned char> &bytes) {
+		return no_copy_blob{std::span<const unsigned char>(bytes.data(), bytes.size())};
+	}
+
+	template<>
+	struct has_sqlite_type<no_copy_text, SQLITE3_TEXT, void> : std::true_type {};
+	template<>
+	struct has_sqlite_type<no_copy_blob, SQLITE_BLOB, void> : std::true_type {};
+
+	inline int bind_col_in_db(sqlite3_stmt* stmt, int inx, const no_copy_text& val) {
+		return sqlite3_bind_text(stmt, inx, val.text.data(),
+		                         static_cast<int>(val.text.size()), SQLITE_STATIC);
+	}
+	inline int bind_col_in_db(sqlite3_stmt* stmt, int inx, const no_copy_blob& val) {
+		void const* buf = val.bytes.empty() ? "" : static_cast<void const*>(val.bytes.data());
+		return sqlite3_bind_blob(stmt, inx, buf, static_cast<int>(val.bytes.size()), SQLITE_STATIC);
+	}
+
 	// str_ref
 	template<>
 	struct has_sqlite_type<std::string, SQLITE3_TEXT, void> : std::true_type {};

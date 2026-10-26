@@ -229,3 +229,50 @@ jobs:
           -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++
       - name: Build
         run: cmake --build build --parallel 4
+
+  # Static analysis, coverage, a short fuzz run and the API docs.
+  quality:
+    name: quality-gates
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 clang-tidy-18 lcov doxygen
+      - name: Configure (clang, compile commands on)
+        run: >-
+          cmake -S . -B build-q -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_C_COMPILER=clang-18
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - name: Build
+        run: cmake --build build-q --parallel 4
+      - name: clang-tidy on the regression target
+        run: |
+          clang-tidy-18 -p build-q tests/maintenance_regression.cpp 2>&1 | tee tidy.log
+          ! grep -q "error:" tidy.log
+      - name: Coverage
+        run: |
+          cmake -S . -B build-cov -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
+            -DSQLITECPP_COVERAGE=ON -DCMAKE_CXX_FLAGS="--coverage"
+            -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+          cmake --build build-cov --parallel 4
+          ctest --test-dir build-cov --output-on-failure
+          lcov --capture --directory build-cov --output-file coverage.info --ignore-errors mismatch
+          lcov --remove coverage.info '*/vendor/*' '*/tests/*' --output-file coverage.info
+          lcov --summary coverage.info
+      - name: Short fuzz run
+        run: |
+          cmake -S . -B build-fuzz -DBUILD_TESTING=ON -DSQLITECPP_BUILD_FUZZERS=ON
+            -DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_C_COMPILER=clang-18
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined" -DCMAKE_C_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-fuzz --target sqlitecpp_fuzz_sql --parallel 4
+          ./build-fuzz/sqlitecpp_fuzz_sql -max_total_time=30 -print_final_stats=1
+      - name: API docs
+        run: |
+          cd docs && doxygen Doxyfile
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api-docs
+          path: docs/doxygen/html
+          retention-days: 7

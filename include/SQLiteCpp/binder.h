@@ -28,11 +28,11 @@ namespace sqlite {
 		database_binder& operator=(const database_binder&) = delete;
 
 		database_binder(database_binder&& other) :
-			_db(std::move(other._db)),
 			_cache(std::move(other._cache)),
-			_slot(std::move(other._slot)),
+			_slot(other._slot),
+			_owned(std::move(other._owned)),
 			_inx(other._inx), execution_started(other.execution_started) {
-			other._slot.reset();
+			other._slot = nullptr;
 		}
 
 		void execute();
@@ -42,6 +42,37 @@ namespace sqlite {
 			std::unique_ptr<char, decltype(sqlite_deleter)> str(sqlite3_expanded_sql(_stmt()), sqlite_deleter);
 			return str ? str.get() : original_sql();
 		}
+
+		// ---- result column metadata ----------------------------------------
+		//
+		// Valid once the statement is prepared; the table/origin accessors need
+		// SQLITE_ENABLE_COLUMN_METADATA when SQLite itself is built.
+
+		int column_count() const {
+			return sqlite3_column_count(_stmt());
+		}
+
+		std::string column_name(int index) const {
+			const char *name = sqlite3_column_name(_stmt(), index);
+			return name ? name : std::string();
+		}
+
+		std::string column_declared_type(int index) const {
+			const char *type = sqlite3_column_decltype(_stmt(), index);
+			return type ? type : std::string();
+		}
+
+#ifdef SQLITE_ENABLE_COLUMN_METADATA
+		std::string column_table_name(int index) const {
+			const char *name = sqlite3_column_table_name(_stmt(), index);
+			return name ? name : std::string();
+		}
+
+		std::string column_origin_name(int index) const {
+			const char *name = sqlite3_column_origin_name(_stmt(), index);
+			return name ? name : std::string();
+		}
+#endif
 
 		std::string original_sql() {
 			const char *sql = sqlite3_sql(_stmt());
@@ -61,9 +92,11 @@ namespace sqlite {
 		row_iterator end();
 
 	private:
-		std::shared_ptr<sqlite3> _db;
 		std::shared_ptr<detail::statement_cache> _cache;
-		std::shared_ptr<detail::statement_slot> _slot;
+		// Borrowed from the cache, or owned through _owned when the cache did
+		// not retain it. A raw pointer avoids reference counting per execution.
+		detail::statement_slot *_slot = nullptr;
+		std::unique_ptr<detail::statement_slot> _owned;
 		utility::UncaughtExceptionDetector _has_uncaught_exception;
 
 		int _inx = 0;
@@ -88,18 +121,22 @@ namespace sqlite {
 	public:
 
 		database_binder(std::shared_ptr<sqlite3> db, std::shared_ptr<detail::statement_cache> cache, str_ref sql):
-			_db(std::move(db)),
 			_cache(std::move(cache)),
 			_inx(0) {
-			_slot = _cache->acquire(sql);
+			(void)db;
+			auto borrowed = _cache->acquire(sql);
+			_slot = borrowed.first;
+			if(!borrowed.second) _owned.reset(_slot);
 		}
 
 		database_binder(std::shared_ptr<sqlite3> db, std::shared_ptr<detail::statement_cache> cache, u16str_ref sql):
-			_db(std::move(db)),
 			_cache(std::move(cache)),
 			_inx(0) {
+			(void)db;
 			const std::string utf8 = utility::utf16_to_utf8(sql);
-			_slot = _cache->acquire(utf8);
+			auto borrowed = _cache->acquire(utf8);
+			_slot = borrowed.first;
+			if(!borrowed.second) _owned.reset(_slot);
 		}
 
 		~database_binder() noexcept(false) {
@@ -108,7 +145,8 @@ namespace sqlite {
 			if(!used() && !_has_uncaught_exception && _slot) {
 				execute();
 			}
-			if(_slot) _cache->release(_slot);
+			if(_slot && !_owned) _cache->release(_slot);
+			_owned.reset();
 		}
 
 		friend class row_iterator;
@@ -188,7 +226,7 @@ namespace sqlite {
 					_binder = nullptr;
 					break;
 				default:
-					exceptions::throw_sqlite_error(result, _binder->sql(), sqlite3_errmsg(_binder->_db.get()));
+					exceptions::throw_sqlite_error(result, _binder->sql(), sqlite3_errmsg(_binder->_cache->connection()));
 			}
 			return *this;
 		}
@@ -227,8 +265,17 @@ namespace sqlite {
 		}
 	}
 	inline void database_binder::execute() {
-		for(auto &&row : *this)
-			(void)row;
+		// Step directly instead of materialising the row iterator: same
+		// semantics, less per-row work on the hot path.
+		if(_stmt()) {
+			while(true) {
+				const int rc = sqlite3_step(_stmt());
+				if(rc == SQLITE_ROW) continue;
+				if(rc == SQLITE_DONE) break;
+				errors::throw_sqlite_error(rc, sql(), sqlite3_errmsg(_cache->connection()));
+			}
+		}
+		execution_started = true;
 	}
 	namespace detail {
 		template<class T> using void_t = void;
@@ -313,7 +360,7 @@ namespace sqlite {
 		db._next_index(); --db._inx;
 		int result = bind_col_in_db(db._stmt(), val.index, std::forward<T>(val.value));
 		if(result != SQLITE_OK)
-			exceptions::throw_sqlite_error(result, db.sql(), sqlite3_errmsg(db._db.get()));
+			exceptions::throw_sqlite_error(result, db.sql(), sqlite3_errmsg(db._cache->connection()));
 		return db;
 	}
 
@@ -324,14 +371,14 @@ namespace sqlite {
 			throw errors::unknown_binding("The given binding name is not valid for this statement", db.sql());
 		int result = bind_col_in_db(db._stmt(), index, std::forward<T>(val.value));
 		if(result != SQLITE_OK)
-			exceptions::throw_sqlite_error(result, db.sql(), sqlite3_errmsg(db._db.get()));
+			exceptions::throw_sqlite_error(result, db.sql(), sqlite3_errmsg(db._cache->connection()));
 		return db;
 	}
 
 	template<typename T> database_binder &operator<<(database_binder& db, T&& val) {
 		int result = bind_col_in_db(db._stmt(), db._next_index(), std::forward<T>(val));
 		if(result != SQLITE_OK)
-			exceptions::throw_sqlite_error(result, db.sql(), sqlite3_errmsg(db._db.get()));
+			exceptions::throw_sqlite_error(result, db.sql(), sqlite3_errmsg(db._cache->connection()));
 		return db;
 	}
 	// Convert the rValue binder to a reference and call first op<<, its needed for the call that creates the binder (be carefull of recursion here!)

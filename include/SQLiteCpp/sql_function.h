@@ -55,6 +55,18 @@ namespace sqlite {
 		>
 		inline void final(sqlite3_context* db);
 
+		template<typename ContextType, std::size_t Count, typename Functions>
+		inline void window_step(sqlite3_context *db, int count, sqlite3_value **vals);
+
+		template<typename ContextType, std::size_t Count, typename Functions>
+		inline void window_inverse(sqlite3_context *db, int count, sqlite3_value **vals);
+
+		template<typename ContextType, typename Functions>
+		inline void window_value(sqlite3_context *db);
+
+		template<typename ContextType, typename Functions>
+		inline void window_final(sqlite3_context *db);
+
 		template<
 			std::size_t Count,
 			typename    Function,
@@ -226,6 +238,102 @@ namespace sqlite {
 			} catch(...) {
 				sqlite3_result_error(db, "Unknown error", -1);
 			}
+		}
+
+		// ---- window functions -------------------------------------------------
+		//
+		// A window function has four callbacks: xStep (row enters the frame),
+		// xInverse (row leaves the frame), xValue (report the current value) and
+		// xFinal (flush). Everything is stored in one tuple as user data and the
+		// aggregate state lives in sqlite3_aggregate_context.
+
+		template<typename Callable, std::size_t Index>
+		using window_argument = typename std::remove_cv<typename std::remove_reference<
+				typename utility::function_traits<Callable>::template argument<Index>>::type>::type;
+
+		template<typename ContextType, std::size_t Count, typename Callable, std::size_t... Index>
+		inline void window_dispatch(Callable &fn, ContextType &context, sqlite3_value **vals,
+		                            std::index_sequence<Index...>) {
+			fn(context, get_val_from_db(vals[Index],
+			                            result_type<window_argument<Callable, Index + 1>>())...);
+		}
+
+		template<typename ContextType, std::size_t Count, typename Functions, std::size_t Slot>
+		inline void window_row(sqlite3_context *db, sqlite3_value **vals) {
+			auto *ctxt = static_cast<AggregateCtxt<ContextType>*>(
+					sqlite3_aggregate_context(db, sizeof(AggregateCtxt<ContextType>)));
+			if(!ctxt) return;
+			try {
+				if(!ctxt->constructed) new(ctxt) AggregateCtxt<ContextType>();
+				auto &fn = std::get<Slot>(*static_cast<Functions*>(sqlite3_user_data(db)));
+				window_dispatch<ContextType, Count>(fn, ctxt->obj, vals,
+				                                    std::make_index_sequence<Count>{});
+			} catch(const sqlite_exception &e) {
+				sqlite3_result_error_code(db, e.get_code());
+				sqlite3_result_error(db, e.what(), -1);
+			} catch(const std::exception &e) {
+				sqlite3_result_error(db, e.what(), -1);
+			} catch(...) {
+				sqlite3_result_error(db, "Unknown error", -1);
+			}
+			if(ctxt && ctxt->constructed)
+				ctxt->~AggregateCtxt();
+		}
+
+		template<typename ContextType, std::size_t Count, typename Functions>
+		inline void window_step(sqlite3_context *db, int, sqlite3_value **vals) {
+			window_row<ContextType, Count, Functions, 0>(db, vals);
+		}
+
+		template<typename ContextType, std::size_t Count, typename Functions>
+		inline void window_inverse(sqlite3_context *db, int, sqlite3_value **vals) {
+			window_row<ContextType, Count, Functions, 1>(db, vals);
+		}
+
+		template<typename ContextType, typename Functions>
+		inline void window_value(sqlite3_context *db) {
+			auto *ctxt = static_cast<AggregateCtxt<ContextType>*>(
+					sqlite3_aggregate_context(db, 0));
+			try {
+				auto &fn = std::get<2>(*static_cast<Functions*>(sqlite3_user_data(db)));
+				if(ctxt) {
+					if(!ctxt->constructed) new(ctxt) AggregateCtxt<ContextType>();
+					store_result_in_db(db, fn(ctxt->obj));
+				} else {
+					// An empty frame reports the value of a default state.
+					ContextType empty{};
+					store_result_in_db(db, fn(empty));
+				}
+			} catch(const sqlite_exception &e) {
+				sqlite3_result_error_code(db, e.get_code());
+				sqlite3_result_error(db, e.what(), -1);
+			} catch(const std::exception &e) {
+				sqlite3_result_error(db, e.what(), -1);
+			} catch(...) {
+				sqlite3_result_error(db, "Unknown error", -1);
+			}
+		}
+
+		template<typename ContextType, typename Functions>
+		inline void window_final(sqlite3_context *db) {
+			auto *ctxt = static_cast<AggregateCtxt<ContextType>*>(
+					sqlite3_aggregate_context(db, 0));
+			try {
+				auto &fn = std::get<3>(*static_cast<Functions*>(sqlite3_user_data(db)));
+				if(ctxt) {
+					if(!ctxt->constructed) new(ctxt) AggregateCtxt<ContextType>();
+					store_result_in_db(db, fn(ctxt->obj));
+				}
+			} catch(const sqlite_exception &e) {
+				sqlite3_result_error_code(db, e.get_code());
+				sqlite3_result_error(db, e.what(), -1);
+			} catch(const std::exception &e) {
+				sqlite3_result_error(db, e.what(), -1);
+			} catch(...) {
+				sqlite3_result_error(db, "Unknown error", -1);
+			}
+			if(ctxt && ctxt->constructed)
+				ctxt->~AggregateCtxt();
 		}
 	}
 
