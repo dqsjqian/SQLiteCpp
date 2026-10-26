@@ -31,6 +31,7 @@ namespace sqlite {
 			_cache(std::move(other._cache)),
 			_slot(other._slot),
 			_owned(std::move(other._owned)),
+			_has_uncaught_exception(other._has_uncaught_exception),
 			_inx(other._inx), execution_started(other.execution_started),
 			_stepped(other._stepped), _reset_done(other._reset_done),
 			_neutralised(other._neutralised) {
@@ -192,9 +193,10 @@ namespace sqlite {
 		// runs at the end of the full expression and reports its failure. It
 		// does not throw while another exception is in flight.
 		~database_binder() noexcept(false) { // NOLINT(bugprone-unsafe-to-allow-exceptions)
-			/* Will be executed if no >>op is found, but not if an exception
-			is in mid flight */
-			if(!used() && !_has_uncaught_exception && _slot) {
+			// Runs a statement nobody consumed, unless an exception is in
+			// flight. The cheap checks go first: every `<<` on a temporary
+			// leaves a moved-from binder behind, and those must cost nothing.
+			if(_slot && !used() && !_has_uncaught_exception) {
 				execute();
 			}
 			if(_slot && !_owned) _cache->release(_slot, !_reset_done);

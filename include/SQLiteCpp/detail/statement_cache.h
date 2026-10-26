@@ -64,6 +64,15 @@ namespace sqlite {
 			std::pair<statement_slot *, bool> acquire(str_ref sql) {
 				if(_capacity == 0) return borrow_uncached(sql);
 				const connection_lock lock(_db.get());
+				// A loop runs the same SQL again and again: that statement is
+				// already the most recent one, so one comparison finds it and
+				// the LRU order needs no update.
+				if(!_lru.empty() && _lru.front().key == sql) {
+					statement_slot *slot = _lru.front().slot.get();
+					if(slot->in_use.load(std::memory_order_acquire)) return borrow_uncached(sql);
+					slot->in_use.store(true, std::memory_order_relaxed);
+					return {slot, true};
+				}
 				// std::less<> makes the lookup transparent: no temporary
 				// std::string is built on the hot path.
 				auto found = _index.find(sql);

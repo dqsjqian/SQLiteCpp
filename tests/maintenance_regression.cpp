@@ -2,11 +2,13 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 static void require(bool condition, const char* expression) {
@@ -556,6 +558,115 @@ static void run_suite() {
         std::string narrow;
         db << "SELECT ?" << u"utf16" >> narrow;
         CHECK(narrow == "utf16");
+    }
+
+    // ---- reads take SQL NULL from SQLite's own result -------------------
+    // 1.2.0 reads each value with one SQLite call; NULL must still read as
+    // 0 / empty, and empty-but-present values must not turn into NULL.
+    {
+        db << "CREATE TABLE nulls (i INTEGER, f REAL, t TEXT, b BLOB)";
+        db << "INSERT INTO nulls VALUES (NULL, NULL, NULL, NULL)";
+        db << "SELECT i, i, f, f, t, t, b FROM nulls"
+           >> [](int i, sqlite3_int64 i64, double d, float f, const std::string &t,
+                 const std::u16string &t16, const std::vector<unsigned char> &b) {
+                CHECK(i == 0 && i64 == 0 && d == 0.0 && f == 0.0f);
+                CHECK(t.empty() && t16.empty() && b.empty());
+            };
+        db << "SELECT i, f, t, t, b FROM nulls"
+           >> [](std::optional<int> i, std::optional<double> d, const std::optional<std::string> &t,
+                 std::unique_ptr<std::string> owned,
+                 const std::variant<std::monostate, std::vector<unsigned char>> &b) {
+                CHECK(!i && !d && !t && !owned);
+                CHECK(std::holds_alternative<std::monostate>(b));
+            };
+        std::optional<std::string> empty_text;
+        db << "SELECT ''" >> empty_text;
+        CHECK(empty_text && empty_text->empty()); // present, just empty
+        std::optional<std::vector<unsigned char>> empty_blob;
+        db << "SELECT x''" >> empty_blob;
+        CHECK(empty_blob && empty_blob->empty());
+        std::string converted;
+        db << "SELECT 1234" >> converted;
+        CHECK(converted == "1234");
+        std::u16string converted16;
+        db << "SELECT 56" >> converted16;
+        CHECK(converted16 == u"56");
+        int parsed = 0;
+        db << "SELECT '42'" >> parsed;
+        CHECK(parsed == 42);
+        // SQL function arguments use the same rules
+        db.define("describe", [](int i, double d, const std::string &t, const std::vector<unsigned char> &b) {
+            return std::to_string(i) + "|" + std::to_string(static_cast<int>(d)) + "|" + t + "|" +
+                   std::to_string(b.size());
+        });
+        std::string described;
+        db << "SELECT describe(NULL, NULL, NULL, NULL)" >> described;
+        CHECK(described == "0|0||0");
+        db << "SELECT describe(7, 2.5, 'x', x'0102')" >> described;
+        CHECK(described == "7|2|x|2");
+    }
+
+    // ---- unwinding decides execution by the binder's creation time ------
+    {
+        db << "CREATE TABLE unwind (v INTEGER, w INTEGER)";
+        // Created, and moved by each `<<`, while an exception is in flight:
+        // nothing new is unwinding when it ends, so it runs.
+        struct writer {
+            sqlite::database &target;
+            bool &failed;
+            ~writer() {
+                try {
+                    target << "INSERT INTO unwind VALUES (?, ?)" << 1 << 2;
+                } catch(...) {
+                    failed = true;
+                }
+            }
+        };
+        bool write_failed = false;
+        try {
+            const writer guard{db, write_failed};
+            CHECK(&guard.target == &db);
+            throw std::runtime_error("unwinding");
+        } catch(const std::runtime_error &) { // NOLINT(bugprone-empty-catch)
+        }
+        CHECK(!write_failed);
+        int written = 0;
+        db << "SELECT COUNT(*) FROM unwind WHERE v = 1 AND w = 2" >> written;
+        CHECK(written == 1);
+        // Created before the throw, destroyed by it: never runs.
+        try {
+            auto pending = db << "INSERT INTO unwind (v) VALUES (?)" << 2;
+            CHECK(!pending.used());
+            throw std::runtime_error("abandon");
+        } catch(const std::runtime_error &) { // NOLINT(bugprone-empty-catch)
+        }
+        db << "SELECT COUNT(*) FROM unwind WHERE v = 2" >> written;
+        CHECK(written == 0);
+    }
+
+    // ---- the most recent statement is reused, but never shared ----------
+    {
+        db << "CREATE TABLE recent (v INTEGER)";
+        for(int i = 0; i < 3; ++i) db << "INSERT INTO recent VALUES (?)" << i;
+        // The same SQL re-entered while it is still stepping gets its own
+        // statement, whether it is the most recent entry or not.
+        int pairs = 0;
+        db << "SELECT v FROM recent" >> [&](int outer) {
+            db << "SELECT v FROM recent" >> [&](int inner) {
+                pairs += (outer >= 0 && inner >= 0) ? 1 : 0;
+            };
+        };
+        CHECK(pairs == 9);
+        // Alternating statements keep both cached and correct.
+        int total = 0;
+        for(int i = 0; i < 4; ++i) {
+            int value = -1;
+            db << "SELECT v FROM recent WHERE v = ?" << (i % 3) >> value;
+            total += value;
+            db << "SELECT COUNT(*) FROM recent" >> value;
+            CHECK(value == 3);
+        }
+        CHECK(total == 0 + 1 + 2 + 0);
     }
 }
 

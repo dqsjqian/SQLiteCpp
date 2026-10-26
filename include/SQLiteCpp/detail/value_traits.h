@@ -66,13 +66,15 @@ namespace sqlite {
 	inline void store_result_in_db(sqlite3_context* db, const int& val) {
 		sqlite3_result_int(db, val);
 	}
+	// Reads below make one SQLite call per value where SQLite's own result
+	// already covers SQL NULL (0, 0.0 or a NULL pointer): every
+	// sqlite3_column_* call takes the connection mutex, so a separate
+	// sqlite3_column_type check would double the cost of reading a column.
 	[[nodiscard]] inline int get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<int>) {
-		return sqlite3_column_type(stmt, inx) == SQLITE_NULL ? 0 :
-			sqlite3_column_int(stmt, inx);
+		return sqlite3_column_int(stmt, inx); // SQL NULL reads as 0
 	}
 	[[nodiscard]] inline int get_val_from_db(sqlite3_value *value, result_type<int>) {
-		return sqlite3_value_type(value) == SQLITE_NULL ? 0 :
-			sqlite3_value_int(value);
+		return sqlite3_value_int(value);
 	}
 
 	// sqlite_int64
@@ -86,12 +88,10 @@ namespace sqlite {
 		sqlite3_result_int64(db, val);
 	}
 	[[nodiscard]] inline sqlite_int64 get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<sqlite_int64 >) {
-		return sqlite3_column_type(stmt, inx) == SQLITE_NULL ? 0 :
-			sqlite3_column_int64(stmt, inx);
+		return sqlite3_column_int64(stmt, inx); // SQL NULL reads as 0
 	}
 	[[nodiscard]] inline sqlite3_int64 get_val_from_db(sqlite3_value *value, result_type<sqlite3_int64>) {
-		return sqlite3_value_type(value) == SQLITE_NULL ? 0 :
-			sqlite3_value_int64(value);
+		return sqlite3_value_int64(value);
 	}
 
 	// float
@@ -105,12 +105,10 @@ namespace sqlite {
 		sqlite3_result_double(db, val);
 	}
 	[[nodiscard]] inline float get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<float>) {
-		return sqlite3_column_type(stmt, inx) == SQLITE_NULL ? 0.0f :
-			static_cast<float>(sqlite3_column_double(stmt, inx));
+		return static_cast<float>(sqlite3_column_double(stmt, inx)); // SQL NULL reads as 0
 	}
 	[[nodiscard]] inline float get_val_from_db(sqlite3_value *value, result_type<float>) {
-		return sqlite3_value_type(value) == SQLITE_NULL ? 0.0f :
-			static_cast<float>(sqlite3_value_double(value));
+		return static_cast<float>(sqlite3_value_double(value));
 	}
 
 	// double
@@ -124,12 +122,10 @@ namespace sqlite {
 		sqlite3_result_double(db, val);
 	}
 	[[nodiscard]] inline double get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<double>) {
-		return sqlite3_column_type(stmt, inx) == SQLITE_NULL ? 0 :
-			sqlite3_column_double(stmt, inx);
+		return sqlite3_column_double(stmt, inx); // SQL NULL reads as 0
 	}
 	[[nodiscard]] inline double get_val_from_db(sqlite3_value *value, result_type<double>) {
-		return sqlite3_value_type(value) == SQLITE_NULL ? 0 :
-			sqlite3_value_double(value);
+		return sqlite3_value_double(value);
 	}
 
 	/* for nullptr support */
@@ -212,21 +208,20 @@ namespace sqlite {
 		return sqlite3_bind_text64(stmt, inx, &STR[0], N - 1, SQLITE_TRANSIENT, SQLITE_UTF8);
 	}
 
+	// Text: SQL NULL comes back as a NULL pointer, an empty string as a
+	// valid one. (A failed allocation while converting also yields NULL and
+	// reads as an empty string, exactly as before this read was shortened.)
+	// The pointer comes first: sqlite3_column_text may convert the value,
+	// and sqlite3_column_bytes must measure the result.
 	[[nodiscard]] inline std::string get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<std::string>) {
-		if ( sqlite3_column_type(stmt, inx) == SQLITE_NULL ) {
-			return std::string();
-		}
-		char const * ptr = reinterpret_cast<char const *>(sqlite3_column_text(stmt, inx));
-		// call sqlite3_column_text explicitely before sqlite3_column_bytes: it may convert the value to text
-		return std::string(ptr, sqlite3_column_bytes(stmt, inx));
+		const auto *ptr = reinterpret_cast<const char *>(sqlite3_column_text(stmt, inx));
+		if(!ptr) return std::string();
+		return std::string(ptr, static_cast<std::size_t>(sqlite3_column_bytes(stmt, inx)));
 	}
 	[[nodiscard]] inline std::string  get_val_from_db(sqlite3_value *value, result_type<std::string>) {
-		if ( sqlite3_value_type(value) == SQLITE_NULL ) {
-			return std::string();
-		}
-		char const * ptr = reinterpret_cast<char const *>(sqlite3_value_text(value));
-		// call sqlite3_column_text explicitely before sqlite3_column_bytes: it may convert the value to text
-		return std::string(ptr, sqlite3_value_bytes(value));
+		const auto *ptr = reinterpret_cast<const char *>(sqlite3_value_text(value));
+		if(!ptr) return std::string();
+		return std::string(ptr, static_cast<std::size_t>(sqlite3_value_bytes(value)));
 	}
 
 	inline void store_result_in_db(sqlite3_context* db, str_ref val) {
@@ -252,19 +247,14 @@ namespace sqlite {
 	}
 
 	[[nodiscard]] inline std::u16string get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<std::u16string>) {
-		if ( sqlite3_column_type(stmt, inx) == SQLITE_NULL ) {
-			return std::u16string();
-		}
-		char16_t const * ptr = reinterpret_cast<char16_t const *>(sqlite3_column_text16(stmt, inx));
-		// call sqlite3_column_text16 explicitely before sqlite3_column_bytes16: it may convert the value to text
-		return std::u16string(ptr, sqlite3_column_bytes16(stmt, inx) / sizeof(char16_t));
+		const auto *ptr = static_cast<const char16_t *>(sqlite3_column_text16(stmt, inx));
+		if(!ptr) return std::u16string();
+		return std::u16string(ptr, static_cast<std::size_t>(sqlite3_column_bytes16(stmt, inx)) / sizeof(char16_t));
 	}
 	[[nodiscard]] inline std::u16string  get_val_from_db(sqlite3_value *value, result_type<std::u16string>) {
-		if ( sqlite3_value_type(value) == SQLITE_NULL ) {
-			return std::u16string();
-		}
-		char16_t const * ptr = reinterpret_cast<char16_t const *>(sqlite3_value_text16(value));
-		return std::u16string(ptr, sqlite3_value_bytes16(value) / sizeof(char16_t));
+		const auto *ptr = static_cast<const char16_t *>(sqlite3_value_text16(value));
+		if(!ptr) return std::u16string();
+		return std::u16string(ptr, static_cast<std::size_t>(sqlite3_value_bytes16(value)) / sizeof(char16_t));
 	}
 
 	inline void store_result_in_db(sqlite3_context* db, u16str_ref val) {
@@ -312,21 +302,19 @@ namespace sqlite {
 		const auto bytes = static_cast<sqlite3_uint64>(vec.size()) * sizeof(T);
 		sqlite3_result_blob64(db, buf, bytes, SQLITE_TRANSIENT);
 	}
+	// BLOB: a NULL pointer means SQL NULL or a zero-length BLOB; both read as
+	// an empty vector.
 	template<typename T, typename A> [[nodiscard]] inline std::vector<T, A> get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<std::vector<T, A>>) {
-		if(sqlite3_column_type(stmt, inx) == SQLITE_NULL) {
-			return {};
-		}
-		T const* buf = reinterpret_cast<T const *>(sqlite3_column_blob(stmt, inx));
-		int bytes = sqlite3_column_bytes(stmt, inx);
-		return std::vector<T, A>(buf, buf + bytes/sizeof(T));
+		const auto *buf = static_cast<const T *>(sqlite3_column_blob(stmt, inx));
+		if(!buf) return {};
+		const auto bytes = static_cast<std::size_t>(sqlite3_column_bytes(stmt, inx));
+		return std::vector<T, A>(buf, buf + bytes / sizeof(T));
 	}
 	template<typename T, typename A> [[nodiscard]] inline std::vector<T, A> get_val_from_db(sqlite3_value *value, result_type<std::vector<T, A>>) {
-		if(sqlite3_value_type(value) == SQLITE_NULL) {
-			return {};
-		}
-		T const* buf = reinterpret_cast<T const *>(sqlite3_value_blob(value));
-		int bytes = sqlite3_value_bytes(value);
-		return std::vector<T, A>(buf, buf + bytes/sizeof(T));
+		const auto *buf = static_cast<const T *>(sqlite3_value_blob(value));
+		if(!buf) return {};
+		const auto bytes = static_cast<std::size_t>(sqlite3_value_bytes(value));
+		return std::vector<T, A>(buf, buf + bytes / sizeof(T));
 	}
 
 	// std::span<T> — bind and SQL-function arguments only. There is
