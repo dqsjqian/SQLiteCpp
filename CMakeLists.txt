@@ -18,12 +18,11 @@ write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/SQLiteCppConfigVers
     VERSION ${PROJECT_VERSION} COMPATIBILITY SameMajorVersion ARCH_INDEPENDENT)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/SQLiteCppConfig.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/SQLiteCppConfigVersion.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SQLiteCpp)
-install(FILES cmake/SQLiteCpp-config.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SQLiteCpp)
 install(FILES License.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/SQLiteCpp)
 include(CTest)
 if(BUILD_TESTING)
     if(FORGEDEPS_TEST_ENVIRONMENT)
-        find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+        find_package(Python3 3.14 REQUIRED COMPONENTS Interpreter)
         set(ForgeDeps_PYTHON_EXECUTABLE "${Python3_EXECUTABLE}")
         execute_process(COMMAND "${Python3_EXECUTABLE}" -m forgedeps cmake-dir
             OUTPUT_VARIABLE _modules OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
