@@ -15,7 +15,7 @@ struct builder {
 };
 
 
-struct user {
+struct user_record {
 	int age;
 	string name;
 	double weight;
@@ -46,7 +46,7 @@ int main() {
 		db << "insert into user (age,name,weight) values (?,?,?);" << 21 << u"monika" << 86.25;
 		db << "insert into user (age,name,weight) values (?,?,?);" << 22 << u"ross" << 88.25;
 
-		auto users = user::all(db);
+		auto users = user_record::all(db);
 		
 		for(auto u : users)
 			cout << u.age << ' ' << u.name << ' ' << u.weight << endl;
