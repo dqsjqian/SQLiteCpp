@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(SQLiteCpp VERSION 0.7.0 LANGUAGES C CXX)
+project(SQLiteCpp VERSION 1.0.0 LANGUAGES C CXX)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 add_library(SQLiteCpp INTERFACE)
