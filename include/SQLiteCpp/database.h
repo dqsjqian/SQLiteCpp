@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstring>
-#include <expected>
 #include <span>
 #include <vector>
 #include <memory>
@@ -129,7 +128,7 @@ namespace sqlite {
 				== (enable ? "wal" : "delete");
 		}
 
-		// Byte-for-byte image of the database (SQLite 3.23 or newer).
+		// Byte-for-byte image of the database.
 		std::vector<unsigned char> serialize(str_ref schema = "main") {
 			sqlite3_int64 size = 0;
 			unsigned char *data = sqlite3_serialize(_db.get(), schema.data(), &size, 0);
@@ -142,7 +141,7 @@ namespace sqlite {
 			return image;
 		}
 
-		// Replaces the database image with the given bytes (SQLite 3.23+).
+		// Replaces the database image with the given bytes.
 		void deserialize(std::span<const unsigned char> image, str_ref schema = "main") {
 			auto *buffer = static_cast<unsigned char *>(sqlite3_malloc64(image.size()));
 			if(!buffer) errors::throw_sqlite_error(SQLITE_NOMEM, "deserialize");
@@ -161,18 +160,22 @@ namespace sqlite {
 		}
 
 		// Same as operator<< / execute, but reports failures through
-		// std::expected instead of exceptions (noexcept), for -fno-exceptions
-		// builds and callers that prefer value-based error handling.
+		// execution_result instead of exceptions, for callers that prefer
+		// value-based error handling.
 		template<typename... Args>
 			requires (bindable<Args> && ...)
-		std::expected<sqlite3_int64, std::string> try_execute(str_ref sql, Args&&... args) noexcept {
+		execution_result try_execute(str_ref sql, Args&&... args) noexcept {
 			try {
 				auto statement = *this << sql;
 				((statement << std::forward<Args>(args)), ...);
 				statement.execute();
-				return rows_modified();
+				return execution_result{rows_modified(), SQLITE_OK, {}};
+			} catch(const sqlite_exception &error) {
+				return execution_result{0, error.get_extended_code(), error.what()};
 			} catch(const std::exception &error) {
-				return std::unexpected(std::string(error.what()));
+				return execution_result{0, SQLITE_ERROR, error.what()};
+			} catch(...) {
+				return execution_result{0, SQLITE_ERROR, "unknown error"};
 			}
 		}
 

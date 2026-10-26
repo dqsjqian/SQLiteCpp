@@ -29,8 +29,8 @@ int main() {
   the same statement N times after a single compile.
 - **Structured results.** Map columns onto a struct with member pointers, or
   read them into a tuple for structured bindings.
-- **Exception-free path.** `try_execute` is `noexcept` and reports failures
-  through `std::expected<sqlite3_int64, std::string>`.
+- **Exception-free path.** `try_execute` is `noexcept` and reports failures by
+  value through `sqlite::execution_result` (changes, code, message).
 - **Precise errors.** Exceptions carry the result code, the extended code, the
   SQL text and the byte offset of the offending token
   (`sqlite3_error_offset`).
@@ -105,9 +105,26 @@ UndefinedBehaviorSanitizer in CI.
 
 ## Requirements
 
-The headers require C++23. `vendor/sqlite` provides SQLite 3.54.1 for the test
-suite; pass `-DSQLITECPP_BUNDLE_SQLITE=OFF` to link an external SQLite instead.
-Installed consumers supply their own SQLite library.
+The headers require C++23 and SQLite 3.38 or newer. The repository vendors the
+official SQLite 3.54.1 amalgamation in `vendor/sqlite` and the test suite always
+builds that copy — there is no switch to substitute a different SQLite. An
+installed package links the SQLite the consumer provides, which must be 3.38 or
+newer; older versions are rejected at compile time with a clear message.
+
+## Platforms
+
+| Platform | Toolchains | Verified |
+|---|---|---|
+| Linux x86-64 | GCC 14, Clang 18 (libstdc++ and libc++), `-Werror` | build + tests |
+| Linux ARM64 | GCC cross toolchain | cross-compile |
+| macOS | AppleClang | build + tests |
+| Windows | MSVC, ClangCL | build + tests |
+| Windows MinGW | GCC UCRT64, `-Werror` | build + tests |
+| iOS | AppleClang, iOS simulator arm64 | cross-compile |
+| Android | NDK clang, arm64-v8a and armeabi-v7a | cross-compile |
+
+Every public header is also compiled on its own, and the suite runs under
+AddressSanitizer and UndefinedBehaviorSanitizer.
 
 ## Build & Install
 

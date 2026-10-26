@@ -1,2 +1,7 @@
 @PACKAGE_INIT@
+
 include("${CMAKE_CURRENT_LIST_DIR}/SQLiteCppTargets.cmake")
+
+# Location of the SQLite amalgamation shipped with this installation. Consumers
+# that do not have SQLite 3.38+ can compile this copy directly.
+set_and_check(SQLiteCpp_SQLITE_DIR "@PACKAGE_CMAKE_INSTALL_DATADIR@/SQLiteCpp/sqlite")

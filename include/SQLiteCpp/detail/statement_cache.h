@@ -106,14 +106,9 @@ namespace sqlite {
 				const char* tail = nullptr;
 				int rc = sqlite3_prepare_v3(_db.get(), sql.data(), static_cast<int>(sql.size()),
 				                            SQLITE_PREPARE_PERSISTENT, &raw, &tail);
-				if(rc != SQLITE_OK) {
-#if SQLITE_VERSION_NUMBER >= 3038000
-					const int offset = sqlite3_error_offset(_db.get());
-#else
-					const int offset = -1;
-#endif
-					errors::throw_sqlite_error(rc, sql, sqlite3_errmsg(_db.get()), offset);
-				}
+				if(rc != SQLITE_OK)
+					errors::throw_sqlite_error(rc, sql, sqlite3_errmsg(_db.get()),
+					                           sqlite3_error_offset(_db.get()));
 				if(raw && !std::all_of(tail, sql.data() + sql.size(),
 				                       [](char ch) { return std::isspace(static_cast<unsigned char>(ch)); })) {
 					sqlite3_finalize(raw);

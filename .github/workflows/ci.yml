@@ -10,63 +10,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # GCC and Clang, both build types, plus Clang with libc++.
+  # Latest GCC and Clang, both build types, both standard libraries.
+  # Every build is also a strict-warning build: warnings are errors here.
   linux:
     name: linux-${{ matrix.compiler }}-${{ matrix.build_type }}${{ matrix.stdlib == 'libc++' && '-libcxx' || '' }}
     strategy:
       fail-fast: false
       matrix:
-        compiler: [gcc-13, gcc-14, clang-17, clang-18]
-        build_type: [Release]
-        stdlib: [default]
         include:
-          - compiler: clang-18
-            build_type: Debug
-            stdlib: default
-          - compiler: clang-18
-            build_type: Release
-            stdlib: libc++
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install the toolchain
-        run: |
-          sudo apt-get update
-          case "${{ matrix.compiler }}" in
-            gcc-13) sudo apt-get install -y g++-13; echo "CXX=g++-13" >> "$GITHUB_ENV" ;;
-            gcc-14) sudo apt-get install -y g++-14; echo "CXX=g++-14" >> "$GITHUB_ENV" ;;
-            clang-17) sudo apt-get install -y clang-17; echo "CXX=clang++-17" >> "$GITHUB_ENV" ;;
-            clang-18) sudo apt-get install -y clang-18; echo "CXX=clang++-18" >> "$GITHUB_ENV" ;;
-          esac
-          if [ "${{ matrix.stdlib }}" = "libc++" ]; then
-            sudo apt-get install -y libc++-18-dev libc++abi-18-dev
-            echo "CXX_EXTRA_FLAGS=-stdlib=libc++" >> "$GITHUB_ENV"
-          fi
-      - name: Configure
-        run: >-
-          cmake -S . -B build -DBUILD_TESTING=ON
-          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
-          -DCMAKE_CXX_FLAGS="$CXX_EXTRA_FLAGS"
-          -DCMAKE_EXE_LINKER_FLAGS="$CXX_EXTRA_FLAGS"
-      - name: Build
-        run: cmake --build build --parallel 4
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
-      - name: Install and verify a downstream consumer
-        if: matrix.compiler == 'gcc-14' && matrix.build_type == 'Release'
-        run: |
-          cmake --install build --prefix "$PWD/stage"
-          cmake -S tests/installed -B build-consumer -DCMAKE_PREFIX_PATH="$PWD/stage"
-          cmake --build build-consumer --parallel 4
-          ctest --test-dir build-consumer --output-on-failure
-
-  # Every warning is an error under both GCC and Clang.
-  strict-warnings:
-    name: strict-warnings-${{ matrix.compiler }}
-    strategy:
-      fail-fast: false
-      matrix:
-        compiler: [gcc-14, clang-18]
+          - { compiler: gcc-14, build_type: Release, stdlib: default }
+          - { compiler: clang-18, build_type: Release, stdlib: default }
+          - { compiler: clang-18, build_type: Debug, stdlib: default }
+          - { compiler: clang-18, build_type: Release, stdlib: libc++ }
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -80,14 +35,27 @@ jobs:
             sudo apt-get install -y clang-18
             echo "CXX=clang++-18" >> "$GITHUB_ENV"
           fi
-      - name: Configure with -Werror
+          if [ "${{ matrix.stdlib }}" = "libc++" ]; then
+            sudo apt-get install -y libc++-18-dev libc++abi-18-dev
+            echo "CXX_EXTRA_FLAGS=-stdlib=libc++" >> "$GITHUB_ENV"
+          fi
+      - name: Configure
         run: >-
-          cmake -S . -B build -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic -Werror"
+          cmake -S . -B build -DBUILD_TESTING=ON
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic -Werror $CXX_EXTRA_FLAGS"
+          -DCMAKE_EXE_LINKER_FLAGS="$CXX_EXTRA_FLAGS"
       - name: Build
         run: cmake --build build --parallel 4
       - name: Test
         run: ctest --test-dir build --output-on-failure
+      - name: Install and verify a downstream consumer
+        if: matrix.compiler == 'gcc-14' && matrix.build_type == 'Release'
+        run: |
+          cmake --install build --prefix "$PWD/stage"
+          cmake -S tests/installed -B build-consumer -DCMAKE_PREFIX_PATH="$PWD/stage"
+          cmake --build build-consumer --parallel 4
+          ctest --test-dir build-consumer --output-on-failure
 
   # Every public header must compile on its own.
   headers:
@@ -119,7 +87,7 @@ jobs:
 
   macos:
     name: macos-appleclang
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
       - name: Configure
@@ -141,19 +109,47 @@ jobs:
       fail-fast: false
       matrix:
         toolset: [MSVC, ClangCL]
-    runs-on: windows-2022
+    runs-on: windows-2025
     steps:
       - uses: actions/checkout@v7
       - uses: ilammy/msvc-dev-cmd@v1
       - name: Configure
-        run: >-
-          cmake -S . -B build -DBUILD_TESTING=ON
-          -DCMAKE_BUILD_TYPE=Release
-          -T ${{ matrix.toolset }}
+        shell: bash
+        run: |
+          args=(-S . -B build -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release)
+          if [ "${{ matrix.toolset }}" = "ClangCL" ]; then
+            args+=(-T ClangCL)
+          fi
+          cmake "${args[@]}"
       - name: Build
         run: cmake --build build --config Release --parallel 4
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+
+  # MinGW-w64 (GCC on Windows, UCRT64 runtime). Runs natively on the runner.
+  mingw:
+    name: windows-mingw-ucrt64
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+      - name: Show the compiler
+        shell: msys2 {0}
+        run: g++ --version | head -1
+      - name: Configure, build and test
+        shell: msys2 {0}
+        run: |
+          cmake -S . -B build -G Ninja -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic -Werror"
+          cmake --build build
+          ctest --test-dir build --output-on-failure
 
   sanitizers:
     name: asan-ubsan
@@ -171,3 +167,66 @@ jobs:
         run: cmake --build build --parallel 4
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+  # Apple platform: cross-compile for the iOS simulator (arm64). The test
+  # executable targets iOS and is compile-verified, not run on the host.
+  ios:
+    name: ios-simulator-arm64
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure for the iOS simulator
+        run: >-
+          cmake -S . -B build -DBUILD_TESTING=ON
+          -DCMAKE_SYSTEM_NAME=iOS
+          -DCMAKE_OSX_SYSROOT=iphonesimulator
+          -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
+      - name: Build
+        run: cmake --build build --parallel 4
+
+  # Android: compile with the NDK for both 64-bit and 32-bit ARM. The test
+  # executable targets Android and is compile-verified, not run on the host.
+  android:
+    name: android-ndk-${{ matrix.abi }}
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Show the NDK in use
+        run: |
+          ndk="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
+          echo "NDK: $ndk"
+          cat "$ndk/source.properties"
+      - name: Configure with the Android NDK
+        run: |
+          ndk="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
+          cmake -S . -B build -DBUILD_TESTING=ON \
+            -DCMAKE_TOOLCHAIN_FILE="$ndk/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-24
+      - name: Build
+        run: cmake --build build --parallel 4
+
+  # 64-bit ARM Linux, cross-compiled (covers embedded and single-board targets).
+  linux-arm64:
+    name: linux-arm64-cross
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-aarch64-linux-gnu
+      - name: Configure
+        run: >-
+          cmake -S . -B build -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_SYSTEM_NAME=Linux
+          -DCMAKE_SYSTEM_PROCESSOR=aarch64
+          -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc
+          -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++
+      - name: Build
+        run: cmake --build build --parallel 4

@@ -93,7 +93,7 @@ int main() {
     const auto ok = db.try_execute("SELECT ?", 7);
     CHECK(ok.has_value());
     const auto bad = db.try_execute("SELECT * FROM no_such_table");
-    CHECK(!bad.has_value() && !bad.error().empty());
+    CHECK(!bad.has_value() && !bad.error.empty() && bad.code != SQLITE_OK);
 
     // syntax errors carry a byte offset into the SQL text
     bool offset_seen = false;

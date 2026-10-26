@@ -58,7 +58,7 @@ namespace sqlite {
 		class invalid_utf16: public sqlite_exception { using sqlite_exception::sqlite_exception; };
 		class unknown_binding: public sqlite_exception { using sqlite_exception::sqlite_exception; };
 
-		inline void throw_sqlite_error(const int& error_code, str_ref sql = "", const char *errmsg = nullptr, int offset = -1) {
+		[[noreturn]] inline void throw_sqlite_error(const int& error_code, str_ref sql = "", const char *errmsg = nullptr, int offset = -1) {
 			// Materialise the offset suffix once; every exception below copies
 			// the message immediately, so the buffer outlives only this frame.
 			std::string annotated;
@@ -76,12 +76,6 @@ namespace sqlite {
 					case SQLITE_ ## NAME:                             \
 					default: throw name(error_code, sql, errmsg, offset);             \
 				}
-
-#if SQLITE_VERSION_NUMBER < 3010000
-#define SQLITE_IOERR_VNODE (SQLITE_IOERR | (27<<8))
-#define SQLITE_IOERR_AUTH (SQLITE_IOERR | (28<<8))
-#define SQLITE_AUTH_USER (SQLITE_AUTH | (1<<8))
-#endif
 
 #define SQLITE_CPP_ERROR_CODE_EXTENDED(BASE,SUB,base,sub) \
 					case SQLITE_ ## BASE ## _ ## SUB: throw base ## _ ## sub(error_code, sql, errmsg, offset);
