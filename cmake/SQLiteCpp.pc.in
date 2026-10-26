@@ -1,0 +1,7 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: SQLiteCpp
+Description: Modern C++23 interface to SQLite
+Version: @PROJECT_VERSION@
+Cflags: -I${includedir}

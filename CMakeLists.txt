@@ -7,10 +7,10 @@ add_library(SQLiteCpp::SQLiteCpp ALIAS SQLiteCpp)
 set_target_properties(SQLiteCpp PROPERTIES EXPORT_NAME SQLiteCpp)
 target_compile_features(SQLiteCpp INTERFACE cxx_std_23)
 target_include_directories(SQLiteCpp INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/hdr>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 install(TARGETS SQLiteCpp EXPORT SQLiteCppTargets)
-install(DIRECTORY hdr/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR} FILES_MATCHING PATTERN "*.h")
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR} FILES_MATCHING PATTERN "*.h")
 install(EXPORT SQLiteCppTargets NAMESPACE SQLiteCpp:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SQLiteCpp)
 configure_package_config_file(cmake/SQLiteCppConfig.cmake.in ${CMAKE_CURRENT_BINARY_DIR}/SQLiteCppConfig.cmake
     INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SQLiteCpp)
@@ -18,7 +18,9 @@ write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/SQLiteCppConfigVers
     VERSION ${PROJECT_VERSION} COMPATIBILITY SameMajorVersion ARCH_INDEPENDENT)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/SQLiteCppConfig.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/SQLiteCppConfigVersion.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SQLiteCpp)
-install(FILES License.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/SQLiteCpp)
+install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/SQLiteCpp)
+configure_file(cmake/SQLiteCpp.pc.in ${CMAKE_CURRENT_BINARY_DIR}/SQLiteCpp.pc @ONLY)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/SQLiteCpp.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 option(SQLITECPP_BUNDLE_SQLITE "Compile the bundled SQLite amalgamation (vendor/sqlite) for tests" ON)
 include(CTest)
 if(BUILD_TESTING)
@@ -53,7 +55,7 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME sqlitecpp-maintained-api COMMAND sqlitecpp_regression)
 
-    add_executable(sqlitecpp_benchmark tests/benchmark.cc)
+    add_executable(sqlitecpp_benchmark benchmarks/benchmark.cc)
     target_compile_features(sqlitecpp_benchmark PRIVATE cxx_std_23)
     target_link_libraries(sqlitecpp_benchmark PRIVATE SQLiteCpp::SQLiteCpp ${SQLITECPP_SQLITE_TARGET})
 

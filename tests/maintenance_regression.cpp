@@ -109,4 +109,35 @@ int main() {
     static_assert(sqlite::bindable<std::string_view>);
     static_assert(sqlite::bindable<std::vector<unsigned char>>);
     static_assert(!sqlite::bindable<void>);
+
+    // structured row access: columns assigned to member pointers in order
+    struct item_record {
+        int id = 0;
+        std::string value;
+    };
+    const auto records = db.select<item_record>(
+        "SELECT id, value FROM item WHERE data IS NOT NULL ORDER BY id",
+        &item_record::id, &item_record::value);
+    CHECK(records.size() == 3 && records[0].id == 1 && records[0].value == "hello");
+
+    // as<Ts...>() enables structured bindings directly
+    for(auto &&row : db << "SELECT id, value FROM item WHERE id = 1") {
+        auto [id, text] = row.as<int, std::string>();
+        CHECK(id == 1 && text == "hello");
+        break;
+    }
+
+    // pragma reads and the WAL helper
+    CHECK(db.pragma("PRAGMA journal_mode") == "memory");
+    CHECK(!db.wal()); // WAL is not available for :memory: databases
+
+    // serialize / deserialize round-trip
+    const auto image = db.serialize();
+    CHECK(!image.empty());
+    sqlite::database restored(":memory:");
+    restored.deserialize(image);
+    int restored_count = 0;
+    restored << "SELECT COUNT(*) FROM item" >> restored_count;
+    db << "SELECT COUNT(*) FROM item" >> result;
+    CHECK(restored_count == result);
 }

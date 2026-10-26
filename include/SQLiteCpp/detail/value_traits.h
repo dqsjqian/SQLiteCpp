@@ -1,29 +1,29 @@
 #pragma once
 
-// SQLiteCpp targets C++23: standard optional, variant and string-view are
-// always available, no feature detection or experimental fallbacks needed.
-#include <type_traits>
-#include <string>
-#include <memory>
-#include <vector>
-#include <span>
-#include <string_view>
-#include <optional>
-#include <variant>
+// Value traits: how each supported C++ type is bound into a statement and
+// read back from a result column.
 
+#include <memory>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <variant>
+#include <vector>
+
+#include <sqlite3.h>
+
+#include "../types.h"
+#include "../errors.h"
+
+namespace sqlite {
+
+	// Capability markers kept for user code that tests for them; always on
+	// under C++23.
 #define SQLITE_CPP_STRINGVIEW_SUPPORT
 #define SQLITE_CPP_STD_OPTIONAL_SUPPORT
 #define SQLITE_CPP_STD_VARIANT_SUPPORT
-
-namespace sqlite
-{
-	using str_ref = const std::string_view;
-	using u16str_ref = const std::u16string_view;
-}
-#include <sqlite3.h>
-#include "errors.h"
-
-namespace sqlite {
 	template<class T, int Type, class = void>
 	struct has_sqlite_type : std::false_type {};
 
