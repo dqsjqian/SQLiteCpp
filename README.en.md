@@ -36,7 +36,7 @@ int main() {
   `commit()` was called; pick `deferred`, `immediate` or `exclusive`. Nested
   `sqlite::savepoint` works the same way.
 - **Bulk execution.** `execute_many` binds one tuple per range element and runs
-  the same statement N times after a single compile — faster than a
+  the same statement N times after a single compile — level with a
   hand-written C loop.
 - **Structured results.** Map columns onto a struct with member pointers, or
   read them into a tuple for structured bindings.
@@ -146,24 +146,57 @@ statement, and a failing commit hook turns the commit into a rollback.
 
 ## Performance
 
-`benchmarks/benchmark.cc`, Release build, Apple Silicon, `:memory:`, bundled
-SQLite 3.54.1, 100,000 operations, median of seven runs:
+`benchmarks/benchmark.cc`, Release build, Apple Silicon, bundled SQLite 3.54.1,
+100,000 operations. Every path does the same work: the row payloads are built
+once before any timing, the C baseline keeps a prepared statement too, the
+first run only warms caches and is discarded, the order of the paths rotates
+between runs, and each figure is the median of nine runs.
+
+`:memory:`:
 
 | Path | Time | Per operation | vs. raw C API |
 |---|---|---|---|
-| Raw C API, one prepared INSERT reused | 23.3 ms | 0.23 µs | baseline |
-| `db << sql << ...` per row, cache disabled | 131.9 ms | 1.32 µs | 5.7x slower |
-| `db << sql << ...` per row, statement cache (default) | 27.8 ms | 0.28 µs | +19% |
-| Held statement, rebound per row | 23.7 ms | 0.24 µs | +2% |
-| `execute_many` | 21.4 ms | 0.21 µs | 8% faster |
-| Raw C API, one prepared SELECT reused | 20.3 ms | 0.20 µs | baseline |
-| `db << sql << id >> value` per row | 27.9 ms | 0.28 µs | +37% |
+| **INSERT** (one transaction) | | | |
+| Raw C API, one prepared statement reused | 20.7 ms | 207 ns | baseline |
+| `db << sql << ...` per row, statement cache (default) | 24.0 ms | 240 ns | +16% |
+| `db << sql << ...` per row, cache disabled | 136.0 ms | 1.36 µs | +557% (6.6x slower) |
+| Held statement, rebound per row | 21.2 ms | 212 ns | +2% |
+| `execute_many` | 20.5 ms | 205 ns | -1% (level) |
+| **Single-row lookup by primary key** (TEXT result) | | | |
+| Raw C API, one prepared statement reused | 22.9 ms | 229 ns | baseline |
+| Raw C API, also stepping once more to `SQLITE_DONE` | 25.0 ms | 250 ns | +9% |
+| `db << sql << id >> value` per row | 27.8 ms | 278 ns | +21% |
+| Held statement, `query << id >> value` | 25.7 ms | 257 ns | +12% |
+| **Full scan** (INTEGER + TEXT per row) | | | |
+| Raw C API, step loop | 7.1 ms | 71 ns | baseline |
+| `db << sql >> [](int, const std::string &)` | 7.4 ms | 74 ns | +4% |
+| `for (auto &&row : db << sql) row.as<int, std::string>()` | 7.3 ms | 73 ns | +3% |
+| `select<record>(...)` (the C side stores into a vector too) | 7.6 ms | 76 ns | +1% |
 
-The statement cache is worth 4.7x on per-row SQL. What remains of the per-row
-gap is the expression syntax itself: one statement object and one cache lookup
-per row, and for `>>` into a single value a second `step` that proves the
-result really is a single row. Holding the statement removes the lookup;
-`execute_many` removes everything and beats the C loop.
+The same benchmark against a database file in WAL mode keeps the ratios:
+per-row INSERT +10%, held statement -3%, `execute_many` -2%, single-row lookup
++8% (four of those points are the single-row check itself), scans +3% to -1%.
+
+How to read it:
+
+- **The per-row expression syntax costs about 33 ns**: one statement object,
+  one cache lookup (a single comparison on a hit) and one connection lock.
+  That is exactly what `execute_many` and a held statement remove.
+- **Nine of the +21% on a single-row `>>` are semantics, not overhead**: it
+  steps once more to prove the result really is a single row and otherwise
+  throws `more_rows` at once. A C loop doing the same check pays the same nine
+  points. The remaining twelve are the cache lookup and the statement object.
+- **Scans cost next to nothing**: one SQLite call per column value (SQL NULL
+  already reads as 0 or empty, so the type is not queried separately); three
+  columns end up within 1 to 4 ns per row of the hand-written C loop.
+- **`execute_many` is level with a held statement, not faster than C**: the
+  1.1.0 claim of "8% faster" came from an unfair benchmark — `execute_many` got
+  pre-built row data while the C baseline built its strings inside the timed
+  region. Measured the same way, they are equal; compile once and loop is the
+  ceiling the C API sets.
+
+Against 1.1.1 on the same machine and the same benchmark: per-row INSERT +24%
+→ +16%, single-row lookup +36% → +21%, full scan +29% → +3%.
 
 ## Platforms
 
