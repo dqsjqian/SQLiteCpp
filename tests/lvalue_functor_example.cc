@@ -20,10 +20,10 @@ struct user_record {
 	string name;
 	double weight;
 	
-	user(int age, string name, double weight) : age(age), name(name), weight(weight) { }
+	user_record(int age_, string name_, double weight_) : age(age_), name(name_), weight(weight_) { }
 
-    static std::vector<user> all(sqlite::database& db) {
-	  builder<user, int, std::string, double> person_builder;
+    static std::vector<user_record> all(sqlite::database& db) {
+	  builder<user_record, int, std::string, double> person_builder;
       db << "SELECT * FROM user;"
         >> person_builder;
       return std::move(person_builder.results); // move to avoid copying data ;-)
