@@ -58,7 +58,7 @@ namespace sqlite {
 		class invalid_utf16: public sqlite_exception { using sqlite_exception::sqlite_exception; };
 		class unknown_binding: public sqlite_exception { using sqlite_exception::sqlite_exception; };
 
-		static void throw_sqlite_error(const int& error_code, str_ref sql = "", const char *errmsg = nullptr, int offset = -1) {
+		inline void throw_sqlite_error(const int& error_code, str_ref sql = "", const char *errmsg = nullptr, int offset = -1) {
 			// Materialise the offset suffix once; every exception below copies
 			// the message immediately, so the buffer outlives only this frame.
 			std::string annotated;

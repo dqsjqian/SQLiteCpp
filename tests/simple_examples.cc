@@ -2,20 +2,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <SQLiteCpp.h>
+#include "tmp_file.h"
 using namespace  sqlite;
 using namespace std;
-
-struct TmpFile
-{
-	string fname;
-
-	TmpFile(): fname(tmpnam(nullptr)) {}
-
-	~TmpFile()
-	{
-		remove(fname.c_str());
-	}
-};
 
 int main()
 {

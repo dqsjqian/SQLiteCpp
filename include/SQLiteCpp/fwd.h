@@ -16,11 +16,6 @@ namespace sqlite {
 
 	typedef std::shared_ptr<sqlite3> connection_type;
 
-	// Any value the library knows how to bind into a statement and read back
-	// from a result column (see the value_traits specialisations).
-	template<typename T>
-	concept bindable = is_sqlite_value<std::remove_cvref_t<T>>::value;
-
 	// Flags for database::define(), mirroring the SQLite function flags.
 	enum class function_flags : int {
 		none = 0,

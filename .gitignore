@@ -15,4 +15,5 @@ stage/
 tests/*
 !tests/*.cc
 !tests/*.cpp
+!tests/*.h
 !tests/installed/

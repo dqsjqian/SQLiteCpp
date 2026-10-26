@@ -1,42 +1,58 @@
 #pragma once
 
-#include <locale>
-#include <string>
-#include <algorithm>
+// UTF-16 to UTF-8 conversion without <codecvt>, which is deprecated since
+// C++17 and warns under strict warning sets.
 
+#include <cstdint>
+#include <string>
+#include <string_view>
+
+#include "../types.h"
 #include "../errors.h"
 
 namespace sqlite {
-	namespace utility {
-		inline std::string utf16_to_utf8(u16str_ref input) {
-			struct : std::codecvt<char16_t, char, std::mbstate_t> {
-			} codecvt;
-			std::mbstate_t state{};
-			std::string result((std::max)(input.size() * 3 / 2, std::size_t(4)), '\0');
-			const char16_t *remaining_input = input.data();
-			std::size_t produced_output = 0;
-			while(true) {
-				char *used_output;
-				switch(codecvt.out(state, remaining_input, input.data() + input.size(),
-				                   remaining_input, &result[produced_output],
-				                   &result[result.size() - 1] + 1, used_output)) {
-				case std::codecvt_base::ok:
-					result.resize(used_output - result.data());
-					return result;
-				case std::codecvt_base::noconv:
-					// This should be unreachable
-				case std::codecvt_base::error:
-					throw errors::invalid_utf16("Invalid UTF-16 input", "");
-				case std::codecvt_base::partial:
-					if(used_output == result.data() + produced_output)
-						throw errors::invalid_utf16("Unexpected end of input", "");
-					produced_output = used_output - result.data();
-					result.resize(
-							result.size()
-							+ (std::max)((input.data() + input.size() - remaining_input) * 3 / 2,
-							           std::ptrdiff_t(4)));
-				}
+	namespace detail {
+		inline void append_utf8(std::string &out, char32_t code_point) {
+			if(code_point <= 0x7F) {
+				out.push_back(static_cast<char>(code_point));
+			} else if(code_point <= 0x7FF) {
+				out.push_back(static_cast<char>(0xC0 | (code_point >> 6)));
+				out.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+			} else if(code_point <= 0xFFFF) {
+				out.push_back(static_cast<char>(0xE0 | (code_point >> 12)));
+				out.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
+				out.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+			} else {
+				out.push_back(static_cast<char>(0xF0 | (code_point >> 18)));
+				out.push_back(static_cast<char>(0x80 | ((code_point >> 12) & 0x3F)));
+				out.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
+				out.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
 			}
+		}
+	} // namespace detail
+
+	namespace utility {
+		// Strict UTF-16 to UTF-8. Lone surrogates and truncated pairs throw
+		// errors::invalid_utf16. Embedded NUL code units are preserved.
+		inline std::string utf16_to_utf8(u16str_ref input) {
+			std::string out;
+			out.reserve(input.size() * 3 / 2 + 4);
+			for(std::size_t i = 0; i < input.size(); ++i) {
+				char32_t code_point = input[i];
+				if(code_point >= 0xD800 && code_point <= 0xDBFF) {
+					if(i + 1 >= input.size())
+						throw errors::invalid_utf16("Truncated surrogate pair", "");
+					const char32_t low = input[i + 1];
+					if(low < 0xDC00 || low > 0xDFFF)
+						throw errors::invalid_utf16("Invalid low surrogate", "");
+					code_point = 0x10000 + ((code_point - 0xD800) << 10) + (low - 0xDC00);
+					++i;
+				} else if(code_point >= 0xDC00 && code_point <= 0xDFFF) {
+					throw errors::invalid_utf16("Unexpected low surrogate", "");
+				}
+				detail::append_utf8(out, code_point);
+			}
+			return out;
 		}
 	} // namespace utility
 } // namespace sqlite

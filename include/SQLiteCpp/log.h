@@ -1,5 +1,8 @@
+#pragma once
+
 #include "errors.h"
 
+#include <memory>
 #include <sqlite3.h>
 
 #include <utility>

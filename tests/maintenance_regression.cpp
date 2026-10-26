@@ -129,6 +129,18 @@ int main() {
 
     // pragma reads and the WAL helper
     CHECK(db.pragma("PRAGMA journal_mode") == "memory");
+    // UTF-16 to UTF-8 across every code-point width
+    CHECK(sqlite::utility::utf16_to_utf8(u"A\u00E9\u4E16\U0001F600")
+          == std::string("A") + "\xC3\xA9" + "\xE4\xB8\x96" + "\xF0\x9F\x98\x80");
+
+    // lone surrogates are rejected
+    bool invalid_utf16 = false;
+    try {
+        sqlite::utility::utf16_to_utf8(std::u16string(1, char16_t(0xD800)));
+    } catch(const sqlite::sqlite_exception &) {
+        invalid_utf16 = true;
+    }
+    CHECK(invalid_utf16);
     CHECK(!db.wal()); // WAL is not available for :memory: databases
 
     // serialize / deserialize round-trip

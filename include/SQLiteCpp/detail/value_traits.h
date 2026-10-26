@@ -36,6 +36,11 @@ namespace sqlite {
 		|| has_sqlite_type<T, SQLITE_BLOB>::value
 	>;
 
+	// Any value the library knows how to bind into a statement and read back
+	// from a result column.
+	template<typename T>
+	concept bindable = is_sqlite_value<std::remove_cvref_t<T>>::value;
+
 	template<class T, int Type>
 	struct has_sqlite_type<T&, Type> : has_sqlite_type<T, Type> {};
 	template<class T, int Type>
@@ -148,10 +153,10 @@ namespace sqlite {
 	inline void store_result_in_db(sqlite3_context* db, std::monostate) {
 		sqlite3_result_null(db);
 	}
- [[nodiscard]] inline std::monostate get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<std::monostate>) {
+ [[nodiscard]] inline std::monostate get_col_from_db(sqlite3_stmt*, int, result_type<std::monostate>) {
 		return std::monostate();
 	}
- [[nodiscard]] inline std::monostate get_val_from_db(sqlite3_value *value, result_type<std::monostate>) {
+ [[nodiscard]] inline std::monostate get_val_from_db(sqlite3_value*, result_type<std::monostate>) {
 		return std::monostate();
 	}
 #endif

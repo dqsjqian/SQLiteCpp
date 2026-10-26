@@ -3,6 +3,7 @@
 
 #define _SQLITE_CPP_BOOST_OPTIONAL_SUPPORT
 #include <SQLiteCpp.h>
+#include "tmp_file.h"
 
 using namespace sqlite;
 using namespace std;
@@ -26,14 +27,6 @@ void select(database& db, bool should_be_null) {
 	};
 }
 
-struct TmpFile {
-	string fname;
-
-	TmpFile(): fname(tmpnam(nullptr)) {}
-
-	~TmpFile() {
-		remove(fname.c_str());
-	}
 };
 
 int main() {

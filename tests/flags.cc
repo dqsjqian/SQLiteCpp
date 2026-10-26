@@ -2,20 +2,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <SQLiteCpp.h>
+#include "tmp_file.h"
 #include <endian.h>
 using namespace sqlite;
 using namespace std;
 
-struct TmpFile
-{
-	string fname;
-
-	TmpFile(): fname(tmpnam(nullptr)) {}
-
-	~TmpFile()
-	{
-		remove(fname.c_str());
-	}
 };
 
 #if __BYTE_ORDER == __BIG_ENDIAN

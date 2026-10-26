@@ -11,7 +11,7 @@ struct tbl_functor {
   explicit tbl_functor(vector<pair<int, string> > &vec_) : vec(vec_) { }
 
   void operator() ( int id, string name) {
-    vec.push_back(make_pair(id, move(name)));
+    vec.push_back(make_pair(id, std::move(name)));
   }
   vector<pair<int,string> > &vec;
 };
