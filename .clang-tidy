@@ -1,19 +1,26 @@
 ---
+# Defect-class checks only, and every finding is an error.
+#
+# Disabled on purpose:
+#   bugprone-easily-swappable-parameters  flags the SQLite-shaped signatures
+#                                         (name, schema, table, column) the
+#                                         API mirrors on purpose
+#   performance-enum-size                 the enums mirror SQLite's int codes
+#   performance-no-int-to-ptr             SQLITE_STATIC / SQLITE_TRANSIENT are
+#                                         SQLite's documented integer sentinels
+#   portability-avoid-pragma-once         every supported compiler implements
+#                                         #pragma once
 Checks: >
+  -*,
   bugprone-*,
+  -bugprone-easily-swappable-parameters,
   performance-*,
+  -performance-enum-size,
+  -performance-no-int-to-ptr,
   portability-*,
-  modernize-*,
-  -modernize-use-trailing-return-type,
-  -modernize-use-nodiscard,
-  -modernize-avoid-c-arrays,
-  readability-*,
-  -readability-identifier-length,
-  -readability-magic-numbers,
-  -readability-function-cognitive-complexity,
-  -readability-uppercase-literal-suffix,
-  -readability-container-size-empty,
-HeaderFilterRegex: 'include/SQLiteCpp.*'
-WarningsAsErrors: ''
+  -portability-avoid-pragma-once,
+  clang-analyzer-*
+HeaderFilterRegex: '.*/include/SQLiteCpp.*'
+WarningsAsErrors: '*'
 FormatStyle: none
 ...

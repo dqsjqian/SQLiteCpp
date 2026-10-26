@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <stdexcept>
+#include <string>
 
 #include <sqlite3.h>
 
@@ -20,8 +21,12 @@ namespace sqlite {
 		backup(database &source, database &target,
 		       str_ref source_schema = "main", str_ref target_schema = "main")
 			: _source(source.connection()), _target(target.connection()) {
-			_handle = sqlite3_backup_init(_target.get(), target_schema.data(),
-			                              _source.get(), source_schema.data());
+			// SQLite wants NUL-terminated names; a string_view does not
+			// guarantee one.
+			const std::string source_name(source_schema);
+			const std::string target_name(target_schema);
+			_handle = sqlite3_backup_init(_target.get(), target_name.c_str(),
+			                              _source.get(), source_name.c_str());
 			if(!_handle)
 				errors::throw_sqlite_error(sqlite3_extended_errcode(_target.get()), {},
 				                           sqlite3_errmsg(_target.get()));

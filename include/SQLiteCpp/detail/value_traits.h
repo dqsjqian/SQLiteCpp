@@ -52,7 +52,7 @@ namespace sqlite {
 	struct result_type {
 		using type = T;
 		constexpr result_type() = default;
-		template<class U, class = typename std::enable_if<std::is_assignable<U, T>::value>>
+		template<class U, class = std::enable_if_t<std::is_assignable_v<U&, T>>>
 		constexpr result_type(result_type<U>) { }
 	};
 
@@ -105,12 +105,12 @@ namespace sqlite {
 		sqlite3_result_double(db, val);
 	}
  [[nodiscard]] inline float get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<float>) {
-		return sqlite3_column_type(stmt, inx) == SQLITE_NULL ? 0 :
-			sqlite3_column_double(stmt, inx);
+		return sqlite3_column_type(stmt, inx) == SQLITE_NULL ? 0.0f :
+			static_cast<float>(sqlite3_column_double(stmt, inx));
 	}
  [[nodiscard]] inline float get_val_from_db(sqlite3_value *value, result_type<float>) {
-		return sqlite3_value_type(value) == SQLITE_NULL ? 0 :
-			sqlite3_value_double(value);
+		return sqlite3_value_type(value) == SQLITE_NULL ? 0.0f :
+			static_cast<float>(sqlite3_value_double(value));
 	}
 
 	// double
@@ -189,12 +189,12 @@ namespace sqlite {
 	struct has_sqlite_type<no_copy_blob, SQLITE_BLOB, void> : std::true_type {};
 
 	inline int bind_col_in_db(sqlite3_stmt* stmt, int inx, const no_copy_text& val) {
-		return sqlite3_bind_text(stmt, inx, val.text.data(),
-		                         static_cast<int>(val.text.size()), SQLITE_STATIC);
+		return sqlite3_bind_text64(stmt, inx, val.text.data(),
+		                           static_cast<sqlite3_uint64>(val.text.size()), SQLITE_STATIC, SQLITE_UTF8);
 	}
 	inline int bind_col_in_db(sqlite3_stmt* stmt, int inx, const no_copy_blob& val) {
 		void const* buf = val.bytes.empty() ? "" : static_cast<void const*>(val.bytes.data());
-		return sqlite3_bind_blob(stmt, inx, buf, static_cast<int>(val.bytes.size()), SQLITE_STATIC);
+		return sqlite3_bind_blob64(stmt, inx, buf, static_cast<sqlite3_uint64>(val.bytes.size()), SQLITE_STATIC);
 	}
 
 	// str_ref
@@ -203,12 +203,13 @@ namespace sqlite {
 	template<>
 	struct has_sqlite_type<std::string_view, SQLITE3_TEXT, void> : std::true_type {};
 	inline int bind_col_in_db(sqlite3_stmt* stmt, int inx, str_ref val) {
-		return sqlite3_bind_text(stmt, inx, val.data(), val.length(), SQLITE_TRANSIENT);
+		return sqlite3_bind_text64(stmt, inx, val.data(), static_cast<sqlite3_uint64>(val.size()),
+		                           SQLITE_TRANSIENT, SQLITE_UTF8);
 	}
 
 	// Convert char* to string_view to trigger op<<(..., const str_ref )
 	template<std::size_t N> inline int bind_col_in_db(sqlite3_stmt* stmt, int inx, const char(&STR)[N]) {
-		return sqlite3_bind_text(stmt, inx, &STR[0], N-1, SQLITE_TRANSIENT);
+		return sqlite3_bind_text64(stmt, inx, &STR[0], N - 1, SQLITE_TRANSIENT, SQLITE_UTF8);
 	}
 
  [[nodiscard]] inline std::string get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<std::string>) {
@@ -229,7 +230,8 @@ namespace sqlite {
 	}
 
 	inline void store_result_in_db(sqlite3_context* db, str_ref val) {
-		sqlite3_result_text(db, val.data(), val.length(), SQLITE_TRANSIENT);
+		sqlite3_result_text64(db, val.data(), static_cast<sqlite3_uint64>(val.size()),
+		                      SQLITE_TRANSIENT, SQLITE_UTF8);
 	}
 	// u16str_ref
 	template<>
@@ -237,12 +239,16 @@ namespace sqlite {
 	template<>
 	struct has_sqlite_type<std::u16string_view, SQLITE3_TEXT, void> : std::true_type {};
 	inline int bind_col_in_db(sqlite3_stmt* stmt, int inx, u16str_ref val) {
-		return sqlite3_bind_text16(stmt, inx, val.data(), sizeof(char16_t) * val.length(), SQLITE_TRANSIENT);
+		// SQLITE_UTF16 means native byte order, which is what char16_t holds.
+		return sqlite3_bind_text64(stmt, inx, reinterpret_cast<const char *>(val.data()),
+		                           static_cast<sqlite3_uint64>(val.size()) * sizeof(char16_t),
+		                           SQLITE_TRANSIENT, SQLITE_UTF16);
 	}
 
 	// Convert char* to string_view to trigger op<<(..., const str_ref )
 	template<std::size_t N> inline int bind_col_in_db(sqlite3_stmt* stmt, int inx, const char16_t(&STR)[N]) {
-		return sqlite3_bind_text16(stmt, inx, &STR[0], sizeof(char16_t) * (N-1), SQLITE_TRANSIENT);
+		return sqlite3_bind_text64(stmt, inx, reinterpret_cast<const char *>(&STR[0]),
+		                           sizeof(char16_t) * (N - 1), SQLITE_TRANSIENT, SQLITE_UTF16);
 	}
 
  [[nodiscard]] inline std::u16string get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<std::u16string>) {
@@ -262,7 +268,9 @@ namespace sqlite {
 	}
 
 	inline void store_result_in_db(sqlite3_context* db, u16str_ref val) {
-		sqlite3_result_text16(db, val.data(), sizeof(char16_t) * val.length(), SQLITE_TRANSIENT);
+		sqlite3_result_text64(db, reinterpret_cast<const char *>(val.data()),
+		                      static_cast<sqlite3_uint64>(val.size()) * sizeof(char16_t),
+		                      SQLITE_TRANSIENT, SQLITE_UTF16);
 	}
 
 	// Other integer types
@@ -273,7 +281,7 @@ namespace sqlite {
 	inline int bind_col_in_db(sqlite3_stmt* stmt, int inx, const Integral& val) {
 		return bind_col_in_db(stmt, inx, static_cast<sqlite3_int64>(val));
 	}
-	template<class Integral, class = std::enable_if<std::is_integral<Integral>::type>>
+	template<class Integral, class = std::enable_if_t<std::is_integral_v<Integral>>>
 	inline void store_result_in_db(sqlite3_context* db, const Integral& val) {
 		store_result_in_db(db, static_cast<sqlite3_int64>(val));
 	}
@@ -294,13 +302,13 @@ namespace sqlite {
 		// An empty container binds a zero-length BLOB; use nullptr or
 		// std::optional to express SQL NULL.
 		void const* buf = vec.empty() ? "" : reinterpret_cast<void const*>(vec.data());
-		auto bytes = static_cast<int>(vec.size() * sizeof(T));
-		return sqlite3_bind_blob(stmt, inx, buf, bytes, SQLITE_TRANSIENT);
+		const auto bytes = static_cast<sqlite3_uint64>(vec.size()) * sizeof(T);
+		return sqlite3_bind_blob64(stmt, inx, buf, bytes, SQLITE_TRANSIENT);
 	}
 	template<typename T, typename A> inline void store_result_in_db(sqlite3_context* db, const std::vector<T, A>& vec) {
 		void const* buf = vec.empty() ? "" : reinterpret_cast<void const*>(vec.data());
-		auto bytes = static_cast<int>(vec.size() * sizeof(T));
-		sqlite3_result_blob(db, buf, bytes, SQLITE_TRANSIENT);
+		const auto bytes = static_cast<sqlite3_uint64>(vec.size()) * sizeof(T);
+		sqlite3_result_blob64(db, buf, bytes, SQLITE_TRANSIENT);
 	}
 	template<typename T, typename A> [[nodiscard]] inline std::vector<T, A> get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<std::vector<T, A>>) {
 		if(sqlite3_column_type(stmt, inx) == SQLITE_NULL) {
@@ -328,11 +336,11 @@ namespace sqlite {
 
 	template<typename T> inline int bind_col_in_db(sqlite3_stmt* stmt, int inx, std::span<T> s) {
 		void const* buf = s.empty() ? "" : reinterpret_cast<void const*>(s.data());
-		return sqlite3_bind_blob(stmt, inx, buf, static_cast<int>(s.size_bytes()), SQLITE_TRANSIENT);
+		return sqlite3_bind_blob64(stmt, inx, buf, static_cast<sqlite3_uint64>(s.size_bytes()), SQLITE_TRANSIENT);
 	}
 	template<typename T> inline void store_result_in_db(sqlite3_context* db, std::span<T> s) {
 		void const* buf = s.empty() ? "" : reinterpret_cast<void const*>(s.data());
-		sqlite3_result_blob(db, buf, static_cast<int>(s.size_bytes()), SQLITE_TRANSIENT);
+		sqlite3_result_blob64(db, buf, static_cast<sqlite3_uint64>(s.size_bytes()), SQLITE_TRANSIENT);
 	}
 
 	/* for unique_ptr<T> support */
@@ -439,12 +447,9 @@ namespace sqlite {
 					return variant_select_type<SQLITE_TEXT, Options...>(std::forward<Callback>(callback));
 				case SQLITE_BLOB:
 					return variant_select_type<SQLITE_BLOB, Options...>(std::forward<Callback>(callback));
+				default:
+					throw errors::mismatch("Unknown SQLite storage class.", "", SQLITE_MISMATCH);
 			}
-#ifdef _MSC_VER
-			__assume(false);
-#else
-			__builtin_unreachable();
-#endif
 		}
 	}
 	template <typename ...Args> inline int bind_col_in_db(sqlite3_stmt* stmt, int inx, const std::variant<Args...>& val) {

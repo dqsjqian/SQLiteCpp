@@ -44,6 +44,5 @@ int main() {
   }
 
   cout << "OK\n";
-  exit(EXIT_SUCCESS);
-  return 0;
+  return EXIT_SUCCESS;
 }

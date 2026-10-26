@@ -1,7 +1,11 @@
+# API reference for the public headers. CI builds it in the quality-gates job
+# and uploads docs/doxygen/html as an artifact.
 PROJECT_NAME           = SQLiteCpp
 PROJECT_BRIEF          = "Modern C++23 wrapper for SQLite"
 OUTPUT_DIRECTORY       = doxygen
-INPUT                  = ../include ../README.md
+INPUT                  = ../include ../README.en.md
+USE_MDFILE_AS_MAINPAGE = ../README.en.md
+INPUT_ENCODING         = UTF-8
 RECURSIVE              = YES
 FILE_PATTERNS          = *.h *.md
 EXCLUDE_PATTERNS       = */lists/* */sqlcipher.h

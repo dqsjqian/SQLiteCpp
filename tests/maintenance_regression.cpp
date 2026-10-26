@@ -1,4 +1,5 @@
 #include <SQLiteCpp.h>
+#include <cstdio>
 #include <filesystem>
 #include <optional>
 #include <span>
@@ -11,7 +12,8 @@ static void require(bool condition, const char* expression) {
     if (!condition) throw std::runtime_error(expression);
 }
 #define CHECK(expression) require((expression), #expression)
-int main() {
+
+static void run_suite() {
     sqlite::database db(":memory:");
     db << "CREATE TABLE item (id INTEGER PRIMARY KEY, value TEXT, missing INTEGER, data BLOB)";
     const std::string_view text = "hello";
@@ -21,7 +23,7 @@ int main() {
     std::optional<int> absent;
     std::vector<unsigned char> blob;
     db << "SELECT value, missing, data FROM item WHERE id=:id" << sqlite::named_parameter(":id", 1)
-       >> [&](std::string value, std::optional<int> missing, std::vector<unsigned char> bytes) {
+       >> [&](const std::string &value, std::optional<int> missing, const std::vector<unsigned char> &bytes) {
             found = value; absent = missing; blob = bytes;
        };
     CHECK(found == text && !absent && blob == data);
@@ -122,10 +124,12 @@ int main() {
     CHECK(records.size() == 3 && records[0].id == 1 && records[0].value == "hello");
 
     // as<Ts...>() enables structured bindings directly
-    for(auto &&row : db << "SELECT id, value FROM item WHERE id = 1") {
-        auto [id, text] = row.as<int, std::string>();
-        CHECK(id == 1 && text == "hello");
-        break;
+    {
+        auto single = db << "SELECT id, value FROM item WHERE id = 1";
+        auto row = single.begin();
+        CHECK(row != single.end());
+        auto [id, row_text] = (*row).as<int, std::string>();
+        CHECK(id == 1 && row_text == "hello");
     }
 
     // pragma reads and the WAL helper
@@ -269,12 +273,16 @@ int main() {
         int updates = 0;
         int commits = 0;
         int rollbacks = 0;
-        db.on_update([&updates](int, std::string, std::string, sqlite3_int64) { ++updates; });
+        std::string updated_table;
+        db.on_update([&](int, std::string_view, std::string_view table, sqlite3_int64) {
+            ++updates;
+            updated_table = std::string(table);
+        });
         db.on_commit([&commits] { ++commits; return 0; });
         db.on_rollback([&rollbacks] { ++rollbacks; });
         db << "CREATE TABLE hooked (v INTEGER)";
         db.execute("INSERT INTO hooked VALUES (1)");
-        CHECK(updates == 1);
+        CHECK(updates == 1 && updated_table == "hooked");
         {
             sqlite::transaction tx(db);
             db.execute("INSERT INTO hooked VALUES (2)");
@@ -287,9 +295,20 @@ int main() {
             // rolled back on scope exit
         }
         CHECK(rollbacks > 0);
-        db.on_update({});
+        db.on_update(nullptr);
         db.on_commit({});
         db.on_rollback({});
+
+        // 1.1.0-style handler taking std::string names still compiles and runs
+        std::string legacy_table;
+        // By-value std::string parameters are the point: this is the 1.1.0 signature.
+        // NOLINTNEXTLINE(performance-unnecessary-value-param)
+        db.on_update([&legacy_table](int, std::string, std::string table, sqlite3_int64) {
+            legacy_table = std::move(table);
+        });
+        db.execute("INSERT INTO hooked VALUES (4)");
+        db.on_update(nullptr);
+        CHECK(legacy_table == "hooked");
     }
 
     // explain returns the query plan
@@ -378,4 +397,160 @@ int main() {
         CHECK("SELECT 1"_sql.view().size() == 8);
         CHECK(std::string_view("SELECT 1"_sql) == "SELECT 1");
     }
+    // ---- binding lifecycle: cached statements never leak values ----------
+    db << "CREATE TABLE lifecycle (a INTEGER, b TEXT)";
+    db << "INSERT INTO lifecycle VALUES (?, ?)" << 1 << "first";
+    db << "INSERT INTO lifecycle VALUES (?, ?)" << 2;     // b left unbound
+    int unbound_is_null = 0;
+    db << "SELECT b IS NULL FROM lifecycle WHERE a = 2" >> unbound_is_null;
+    CHECK(unbound_is_null == 1);
+
+    // execute_many with a narrower tuple NULLs the remaining parameters
+    db.execute_many("INSERT INTO lifecycle VALUES (?, ?)",
+                    std::vector<std::tuple<int>>{{3}, {4}});
+    db << "SELECT COUNT(*) FROM lifecycle WHERE a IN (3, 4) AND b IS NULL" >> result;
+    CHECK(result == 2);
+
+    // a held binder can be rebound, with named parameters too
+    {
+        auto held = db << "INSERT INTO lifecycle VALUES (:a, :b)";
+        held << sqlite::named_parameter(":a", 10) << sqlite::named_parameter(":b", "x");
+        held.execute();
+        held << sqlite::named_parameter(":a", 11) << sqlite::named_parameter(":b", "y");
+        held.execute();
+        held << sqlite::named_parameter(":a", 12);           // :b left unbound
+        held.execute();
+    }
+    std::string held_b;
+    db << "SELECT b FROM lifecycle WHERE a = 11" >> held_b;
+    CHECK(held_b == "y");
+    db << "SELECT b IS NULL FROM lifecycle WHERE a = 12" >> unbound_is_null;
+    CHECK(unbound_is_null == 1);
+
+    // re-running a round without rebinding keeps its parameters
+    {
+        auto rerun = db << "SELECT ? + 1" << 41;
+        int first = 0;
+        int second = 0;
+        rerun >> first;
+        rerun >> second;
+        CHECK(first == 42 && second == 42);
+    }
+
+    // a failing execute() is not repeated by the destructor
+    db << "CREATE TABLE unique_values (v INTEGER UNIQUE)";
+    db << "INSERT INTO unique_values VALUES (1)";
+    bool destructor_threw = false;
+    try {
+        auto duplicate = db << "INSERT INTO unique_values VALUES (1)";
+        bool execute_threw = false;
+        try {
+            duplicate.execute();
+        } catch(const sqlite::sqlite_exception &) {
+            execute_threw = true;
+        }
+        CHECK(execute_threw);
+    } catch(const std::exception &) {
+        destructor_threw = true;
+    }
+    CHECK(!destructor_threw);
+
+    // an abandoned iteration is reset on release and blocks nothing
+    {
+        auto partial = db << "SELECT a FROM lifecycle ORDER BY a";
+        auto first_row = partial.begin(); // steps once, then abandoned
+        CHECK(first_row != partial.end());
+        auto moved = std::move(partial);
+        (void)moved;
+    }
+    {
+        sqlite::savepoint after_partial(db, "after_partial");
+        after_partial.commit();
+    }
+    // ---- callbacks never unwind through SQLite's C frames ---------------
+    {
+        db.progress_handler([]() -> int { throw std::runtime_error("progress"); }, 1);
+        bool interrupted = false;
+        try {
+            db << "SELECT COUNT(*) FROM lifecycle" >> result;
+        } catch(const sqlite::errors::interrupt &) {
+            interrupted = true;
+        }
+        db.clear_progress_handler();
+        CHECK(interrupted);
+
+        db.on_commit([]() -> int { throw std::runtime_error("commit"); });
+        bool rolled_back = false;
+        try {
+            sqlite::transaction tx(db);
+            db.execute("INSERT INTO lifecycle VALUES (100, 'never')");
+            tx.commit();
+        } catch(const sqlite::sqlite_exception &) {
+            rolled_back = true;
+        }
+        db.on_commit({});
+        CHECK(rolled_back);
+        db << "SELECT COUNT(*) FROM lifecycle WHERE a = 100" >> result;
+        CHECK(result == 0);
+
+        db.on_update([](int, std::string_view, std::string_view, sqlite3_int64) {
+            throw std::runtime_error("update");
+        });
+        db.execute("INSERT INTO lifecycle VALUES (101, 'kept')");
+        db.on_update(nullptr);
+        db << "SELECT COUNT(*) FROM lifecycle WHERE a = 101" >> result;
+        CHECK(result == 1);
+    }
+
+    // ---- try_execute reports by code ------------------------------------
+    {
+        const auto duplicate_insert = db.try_execute("INSERT INTO unique_values VALUES (1)");
+        CHECK(!duplicate_insert && duplicate_insert.code != SQLITE_OK);
+        const auto changed = db.try_execute("INSERT INTO unique_values VALUES (?)", 2);
+        CHECK(changed && changed.value() == 1);
+    }
+
+    // ---- used(false) re-runs the last round with its bindings -----------
+    {
+        db << "CREATE TABLE rerun (v INTEGER)";
+        {
+            auto again = db << "INSERT INTO rerun VALUES (?)" << 7;
+            again.execute();
+            again.used(false); // the destructor executes it once more
+        }
+        db << "SELECT COUNT(*) FROM rerun WHERE v = 7" >> result;
+        CHECK(result == 2);
+    }
+
+    // ---- names passed as views need not be NUL-terminated ---------------
+    {
+        const std::string padded = "blobsXdataX";
+        const std::string_view table(padded.data(), 5);   // "blobs", then 'X'
+        const std::string_view column(padded.data() + 6, 4); // "data", then 'X'
+        sqlite::blob handle(db, table, column, 1, true);
+        CHECK(handle.size() == 1024);
+        const std::string_view schema_padded = std::string_view("mainX").substr(0, 4);
+        CHECK(!db.serialize(schema_padded).empty());
+    }
+
+    // ---- UTF-16 text round-trips through the 64-bit binding path ---------
+    {
+        std::u16string wide;
+        db << "SELECT ?" << std::u16string_view(u"\u4e2d\u6587 text") >> wide;
+        CHECK(wide == u"\u4e2d\u6587 text");
+        std::string narrow;
+        db << "SELECT ?" << u"utf16" >> narrow;
+        CHECK(narrow == "utf16");
+    }
+}
+
+int main() {
+    try {
+        run_suite();
+    } catch(const std::exception &error) {
+        std::fprintf(stderr, "FAILED: %s\n", error.what());
+        return 1;
+    }
+    std::puts("maintenance_regression: all checks passed");
+    return 0;
 }

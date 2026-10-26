@@ -32,9 +32,11 @@ namespace sqlite {
 		int code = SQLITE_OK;
 		std::string error;
 
-		explicit operator bool() const { return error.empty(); }
-		bool has_value() const { return error.empty(); }
-		sqlite3_int64 value() const { return changes; }
+		// Success is decided by the code, so a failure whose message could not
+		// be allocated still reports as a failure.
+		explicit operator bool() const noexcept { return code == SQLITE_OK; }
+		bool has_value() const noexcept { return code == SQLITE_OK; }
+		sqlite3_int64 value() const noexcept { return changes; }
 	};
 
 	// Flags for database::define(), mirroring the SQLite function flags.

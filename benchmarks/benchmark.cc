@@ -3,6 +3,7 @@
 #include <SQLiteCpp.h>
 #include <chrono>
 #include <cstdio>
+#include <exception>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -60,7 +61,7 @@ static double ms_since(clock_type::time_point start) {
     return std::chrono::duration<double, std::milli>(clock_type::now() - start).count();
 }
 
-int main() {
+static void run_benchmark() {
     const int inserts = 100000;
     const int selects = 100000;
 
@@ -87,6 +88,22 @@ int main() {
     std::printf("inserts=%d  %.1f ms  (%.2f us/op)\n", inserts, insert_ms, insert_ms * 1000.0 / inserts);
     std::printf("selects=%d  %.1f ms  (%.2f us/op)\n", selects, select_ms, select_ms * 1000.0 / selects);
     std::printf("checksum=%lld\n", sum);
+
+    // Same per-row INSERT with the statement cache disabled: every row
+    // compiles its statement, which is what the cache saves.
+    sqlite::sqlite_config uncached_config;
+    uncached_config.statement_cache_size = 0;
+    sqlite::database uncached_db(":memory:", uncached_config);
+    uncached_db << "CREATE TABLE bench (id INTEGER PRIMARY KEY, value TEXT)";
+    const auto uncached_start = clock_type::now();
+    uncached_db << "BEGIN";
+    for (int i = 0; i < inserts; ++i) {
+        uncached_db << "INSERT INTO bench VALUES (?, ?)" << i << "payload-" + std::to_string(i);
+    }
+    uncached_db << "COMMIT";
+    const double uncached_ms = ms_since(uncached_start);
+    std::printf("no cache       inserts=%d  %.1f ms  (%.2f us/op)\n",
+                inserts, uncached_ms, uncached_ms * 1000.0 / inserts);
 
     // execute_many: one compile, N executions (row payloads pre-built)
     std::vector<std::tuple<int, std::string>> prepared_rows;
@@ -130,5 +147,14 @@ int main() {
                 (select_ms - raw.select_ms) / raw.select_ms * 100.0);
     std::printf("reused binder  overhead=%+.1f%%\n",
                 (reuse_ms - raw.insert_ms) / raw.insert_ms * 100.0);
+}
+
+int main() {
+    try {
+        run_benchmark();
+    } catch(const std::exception &error) {
+        std::fprintf(stderr, "benchmark failed: %s\n", error.what());
+        return 1;
+    }
     return 0;
 }

@@ -36,7 +36,7 @@ namespace sqlite {
 			if(_active) {
 				try {
 					rollback();
-				} catch(...) {
+				} catch(...) { // NOLINT(bugprone-empty-catch)
 					// A destructor must not throw; the connection reports the
 					// original failure on the next statement anyway.
 				}
@@ -108,7 +108,8 @@ namespace sqlite {
 			if(_active) {
 				try {
 					rollback();
-				} catch(...) {
+				} catch(...) { // NOLINT(bugprone-empty-catch)
+					// Same contract as transaction: never throw from a destructor.
 				}
 			}
 		}

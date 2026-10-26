@@ -21,8 +21,13 @@ namespace sqlite {
 		blob(database &db, str_ref table, str_ref column, sqlite3_int64 rowid,
 		     bool read_only = false, str_ref schema = "main")
 			: _db(db.connection()) {
-			if(const int rc = sqlite3_blob_open(_db.get(), schema.data(), table.data(),
-			                                     column.data(), rowid, read_only ? 0 : 1, &_handle);
+			// SQLite wants NUL-terminated names; a string_view does not
+			// guarantee one.
+			const std::string schema_name(schema);
+			const std::string table_name(table);
+			const std::string column_name(column);
+			if(const int rc = sqlite3_blob_open(_db.get(), schema_name.c_str(), table_name.c_str(),
+			                                     column_name.c_str(), rowid, read_only ? 0 : 1, &_handle);
 			   rc != SQLITE_OK) {
 				_handle = nullptr;
 				errors::throw_sqlite_error(rc, {}, sqlite3_errmsg(_db.get()));

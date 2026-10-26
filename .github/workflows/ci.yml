@@ -9,269 +9,335 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Strict warnings are an error on every toolchain: -Wall -Wextra -Wpedantic
+  # -Werror for GCC/Clang, /W4 /WX /permissive- for MSVC and clang-cl.
+  STRICT: -DSQLITECPP_WARNINGS_AS_ERRORS=ON
+  # apt is only used where the runner image lacks a package. Retries and
+  # timeouts keep a slow mirror from stalling a job.
+  APT: sudo apt-get -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=300
+
 jobs:
-  # Latest GCC and Clang, both build types, both standard libraries.
-  # Every build is also a strict-warning build: warnings are errors here.
+  # Runner policy: every job uses a `-latest` label, and Linux jobs detect the
+  # newest GCC / LLVM preinstalled on the image (.github/scripts/select-toolchain.sh)
+  # instead of hardcoding a version: ubuntu-latest moves from 24.04 to 26.04
+  # between 2026-10-19 and 2026-11-19, so either image may serve a job.
+  # The ARM jobs have no `-latest` alias and use the newest GA ARM images.
+  #
+  # Newest GCC and Clang, both build types, both standard libraries.
   linux:
     name: linux-${{ matrix.compiler }}-${{ matrix.build_type }}${{ matrix.stdlib == 'libc++' && '-libcxx' || '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { compiler: gcc-14, build_type: Release, stdlib: default }
-          - { compiler: clang-18, build_type: Release, stdlib: default }
-          - { compiler: clang-18, build_type: Debug, stdlib: default }
-          - { compiler: clang-18, build_type: Release, stdlib: libc++ }
-    runs-on: ubuntu-24.04
+          - { compiler: gcc, build_type: Release, stdlib: default }
+          - { compiler: clang, build_type: Release, stdlib: default }
+          - { compiler: clang, build_type: Debug, stdlib: default }
+          - { compiler: clang, build_type: Release, stdlib: libc++ }
     steps:
       - uses: actions/checkout@v7
-      - name: Install the toolchain
+      - name: Select the newest preinstalled toolchain
+        run: .github/scripts/select-toolchain.sh default=${{ matrix.compiler == 'gcc' && 'gcc' || 'llvm' }}
+      - name: Install libc++
+        if: matrix.stdlib == 'libc++'
         run: |
-          sudo apt-get update
-          if [ "${{ matrix.compiler }}" = "gcc-14" ]; then
-            sudo apt-get install -y g++-14
-            echo "CXX=g++-14" >> "$GITHUB_ENV"
-          else
-            sudo apt-get install -y clang-18
-            echo "CXX=clang++-18" >> "$GITHUB_ENV"
-          fi
-          if [ "${{ matrix.stdlib }}" = "libc++" ]; then
-            sudo apt-get install -y libc++-18-dev libc++abi-18-dev
-            echo "CXX_EXTRA_FLAGS=-stdlib=libc++" >> "$GITHUB_ENV"
-          fi
+          $APT update
+          $APT install "libc++-$LLVM_VER-dev" "libc++abi-$LLVM_VER-dev"
+      - name: Show the toolchain
+        run: $CXX --version | head -1
       - name: Configure
         run: >-
-          cmake -S . -B build -DBUILD_TESTING=ON
+          cmake -S . -B build -G Ninja -DBUILD_TESTING=ON $STRICT
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
-          -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic -Werror $CXX_EXTRA_FLAGS"
+          ${{ matrix.stdlib == 'libc++' && '-DCMAKE_CXX_FLAGS=-stdlib=libc++' || '' }}
       - name: Build
-        run: cmake --build build --parallel 4
+        run: cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Install and verify a downstream consumer
-        if: matrix.compiler == 'gcc-14' && matrix.build_type == 'Release'
+        if: matrix.compiler == 'gcc'
         run: |
           cmake --install build --prefix "$PWD/stage"
-          cmake -S tests/installed -B build-consumer -DCMAKE_PREFIX_PATH="$PWD/stage"
-          cmake --build build-consumer --parallel 4
+          cmake -S tests/installed -B build-consumer -G Ninja -DCMAKE_PREFIX_PATH="$PWD/stage"
+          cmake --build build-consumer
           ctest --test-dir build-consumer --output-on-failure
 
-  # Every public header must compile on its own.
-  headers:
-    name: header-self-containment
-    runs-on: ubuntu-24.04
+  # Native 64-bit ARM Linux: build and run the suite on real hardware.
+  # There is no ubuntu-latest-arm alias; 26.04 is the newest GA ARM image.
+  linux-arm64:
+    name: linux-arm64-gcc
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - name: Install GCC 14
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y g++-14
+      - name: Select the newest preinstalled GCC
+        run: .github/scripts/select-toolchain.sh default=gcc
+      - name: Show the toolchain
+        run: $CXX --version | head -1
+      - name: Configure
+        run: cmake -S . -B build -DBUILD_TESTING=ON $STRICT -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # Every public header must compile on its own, under both compilers.
+  headers:
+    name: header-self-containment
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Select the newest preinstalled toolchains
+        run: .github/scripts/select-toolchain.sh gcc llvm
       - name: Compile each header in isolation
         run: |
-          set -e
           status=0
-          headers=$(ls include/SQLiteCpp.h include/SQLiteCpp/*.h include/SQLiteCpp/detail/*.h)
-          for header in $headers; do
-            case "$header" in
-              include/SQLiteCpp/sqlcipher.h) continue ;;  # needs the SQLCipher extension
-            esac
-            printf '#include <%s>\nint main() { return 0; }\n' "${header#include/}" > /tmp/header_check.cc
-            if ! g++-14 -std=c++23 -Iinclude -Ivendor/sqlite -Wall -Wextra -Werror \
-                 -fsyntax-only /tmp/header_check.cc; then
-              echo "header is not self-contained: $header"
-              status=1
-            fi
+          for compiler in "$GCC_CXX" "$CLANG_CXX"; do
+            for header in include/SQLiteCpp.h include/SQLiteCpp/*.h include/SQLiteCpp/detail/*.h; do
+              case "$header" in
+                include/SQLiteCpp/sqlcipher.h) continue ;;  # needs the SQLCipher extension
+              esac
+              printf '#include <%s>\nint main() { return 0; }\n' "${header#include/}" > /tmp/header_check.cc
+              if ! $compiler -std=c++23 -Iinclude -Ivendor/sqlite -Wall -Wextra -Wpedantic -Werror \
+                   -fsyntax-only /tmp/header_check.cc; then
+                echo "::error file=$header::not self-contained under $compiler"
+                status=1
+              fi
+            done
           done
           exit $status
 
+  # macos-latest follows GitHub's current GA macOS image.
   macos:
     name: macos-appleclang
-    runs-on: macos-15
+    runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      - name: Show the toolchain
+        run: |
+          sw_vers -productVersion
+          xcodebuild -version | head -1
+          clang++ --version | head -1
       - name: Configure
-        run: cmake -S . -B build -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DBUILD_TESTING=ON $STRICT -DCMAKE_BUILD_TYPE=Release
       - name: Build
-        run: cmake --build build --parallel 4
+        run: cmake --build build --parallel
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Install and verify a downstream consumer
         run: |
           cmake --install build --prefix "$PWD/stage"
           cmake -S tests/installed -B build-consumer -DCMAKE_PREFIX_PATH="$PWD/stage"
-          cmake --build build-consumer --parallel 4
+          cmake --build build-consumer --parallel
           ctest --test-dir build-consumer --output-on-failure
 
-  windows:
-    name: windows-${{ matrix.toolset }}
-    strategy:
-      fail-fast: false
-      matrix:
-        toolset: [MSVC, ClangCL]
-    runs-on: windows-2025
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ilammy/msvc-dev-cmd@v1
-      - name: Configure
-        shell: bash
-        run: |
-          args=(-S . -B build -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release)
-          if [ "${{ matrix.toolset }}" = "ClangCL" ]; then
-            args+=(-T ClangCL)
-          fi
-          cmake "${args[@]}"
-      - name: Build
-        run: cmake --build build --config Release --parallel 4
-      - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure
-
-  # MinGW-w64 (GCC on Windows, UCRT64 runtime). Runs natively on the runner.
-  mingw:
-    name: windows-mingw-ucrt64
-    runs-on: windows-2025
-    steps:
-      - uses: actions/checkout@v7
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: false
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
-      - name: Show the compiler
-        shell: msys2 {0}
-        run: g++ --version | head -1
-      - name: Configure, build and test
-        shell: msys2 {0}
-        run: |
-          cmake -S . -B build -G Ninja -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic -Werror"
-          cmake --build build
-          ctest --test-dir build --output-on-failure
-
-  sanitizers:
-    name: asan-ubsan
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - name: Configure with AddressSanitizer and UndefinedBehaviorSanitizer
-        run: >-
-          cmake -S . -B build -DBUILD_TESTING=ON
-          -DCMAKE_BUILD_TYPE=Debug
-          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
-          -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
-          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
-      - name: Build
-        run: cmake --build build --parallel 4
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
-
-  # Apple platform: cross-compile for the iOS simulator (arm64). The test
-  # executable targets iOS and is compile-verified, not run on the host.
+  # iOS simulator (arm64). The executables target iOS, so this job verifies
+  # that the library and every test compile and link for the platform.
   ios:
     name: ios-simulator-arm64
-    runs-on: macos-15
+    runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      - name: Show the toolchain
+        run: |
+          sw_vers -productVersion
+          xcodebuild -version | head -1
+          xcrun --sdk iphonesimulator --show-sdk-version
       - name: Configure for the iOS simulator
         run: >-
-          cmake -S . -B build -DBUILD_TESTING=ON
+          cmake -S . -B build -DBUILD_TESTING=ON $STRICT
           -DCMAKE_SYSTEM_NAME=iOS
           -DCMAKE_OSX_SYSROOT=iphonesimulator
           -DCMAKE_OSX_ARCHITECTURES=arm64
           -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
       - name: Build
-        run: cmake --build build --parallel 4
+        run: cmake --build build --parallel
 
-  # Android: compile with the NDK for both 64-bit and 32-bit ARM. The test
-  # executable targets Android and is compile-verified, not run on the host.
+  # Android with the newest NDK on the image, 64-bit and 32-bit ARM. The
+  # executables target Android: compile and link verification.
   android:
     name: android-ndk-${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         abi: [arm64-v8a, armeabi-v7a]
-    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - name: Show the NDK in use
-        run: |
-          ndk="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
-          echo "NDK: $ndk"
-          cat "$ndk/source.properties"
-      - name: Configure with the Android NDK
-        run: |
-          ndk="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
-          cmake -S . -B build -DBUILD_TESTING=ON \
-            -DCMAKE_TOOLCHAIN_FILE="$ndk/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=${{ matrix.abi }} \
-            -DANDROID_PLATFORM=android-24
-      - name: Build
-        run: cmake --build build --parallel 4
-
-  # 64-bit ARM Linux, cross-compiled (covers embedded and single-board targets).
-  linux-arm64:
-    name: linux-arm64-cross
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install the cross toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y g++-aarch64-linux-gnu
+      - name: Show the NDK
+        run: grep Pkg.Revision "$ANDROID_NDK_LATEST_HOME/source.properties"
       - name: Configure
         run: >-
-          cmake -S . -B build -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_SYSTEM_NAME=Linux
-          -DCMAKE_SYSTEM_PROCESSOR=aarch64
-          -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc
-          -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++
+          cmake -S . -B build -G Ninja -DBUILD_TESTING=ON $STRICT
+          -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake"
+          -DANDROID_ABI=${{ matrix.abi }}
+          -DANDROID_PLATFORM=android-24
       - name: Build
-        run: cmake --build build --parallel 4
+        run: cmake --build build
 
-  # Static analysis, coverage, a short fuzz run and the API docs.
-  quality:
-    name: quality-gates
-    runs-on: ubuntu-24.04
+  # Visual Studio 2026: MSVC and clang-cl on x64 (windows-latest), MSVC on
+  # native ARM64 (no -latest alias; the newest GA ARM image with VS 2026).
+  windows:
+    name: windows-${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: MSVC-x64, runner: windows-latest, toolset: '' }
+          - { name: ClangCL-x64, runner: windows-latest, toolset: ClangCL }
+          - { name: MSVC-arm64, runner: windows-11-vs2026-arm, toolset: '' }
     steps:
       - uses: actions/checkout@v7
+      - name: Configure
+        shell: bash
+        run: |
+          args=(-S . -B build -DBUILD_TESTING=ON $STRICT)
+          if [ -n "${{ matrix.toolset }}" ]; then
+            args+=(-T "${{ matrix.toolset }}")
+          fi
+          cmake "${args[@]}"
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  # MinGW-w64 (GCC, UCRT runtime) from MSYS2, running natively on Windows.
+  mingw:
+    name: windows-mingw-ucrt64
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+      - name: Configure, build and test
+        shell: msys2 {0}
+        run: |
+          g++ --version | head -1
+          cmake -S . -B build -G Ninja -DBUILD_TESTING=ON $STRICT -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+
+  sanitizers:
+    name: asan-ubsan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SAN: -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
+    steps:
+      - uses: actions/checkout@v7
+      - name: Select the newest preinstalled GCC
+        run: .github/scripts/select-toolchain.sh default=gcc
+      - name: Configure with AddressSanitizer and UndefinedBehaviorSanitizer
+        run: >-
+          cmake -S . -B build -G Ninja -DBUILD_TESTING=ON $STRICT
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_FLAGS="$SAN" -DCMAKE_CXX_FLAGS="$SAN"
+          -DCMAKE_EXE_LINKER_FLAGS="$SAN"
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # One connection shared by several threads (tests/concurrency.cc) plus the
+  # whole suite under ThreadSanitizer.
+  tsan:
+    name: tsan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TSAN: -fsanitize=thread -fno-omit-frame-pointer
+      TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
+    steps:
+      - uses: actions/checkout@v7
+      - name: Select the newest preinstalled Clang
+        run: .github/scripts/select-toolchain.sh default=llvm
+      - name: Keep ASLR entropy within what ThreadSanitizer supports
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: Configure with ThreadSanitizer
+        run: >-
+          cmake -S . -B build -G Ninja -DBUILD_TESTING=ON $STRICT
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_FLAGS="$TSAN" -DCMAKE_CXX_FLAGS="$TSAN"
+          -DCMAKE_EXE_LINKER_FLAGS="$TSAN"
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # clang-tidy, coverage, a short fuzz run and the API docs. Each step fails
+  # the job on its own; none of them only prints.
+  quality:
+    name: quality-gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: Select the newest preinstalled toolchains
+        run: .github/scripts/select-toolchain.sh gcc llvm
       - name: Install the tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-18 clang-tidy-18 lcov doxygen
-      - name: Configure (clang, compile commands on)
-        run: >-
-          cmake -S . -B build-q -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
-          -DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_C_COMPILER=clang-18
-          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-      - name: Build
-        run: cmake --build build-q --parallel 4
-      - name: clang-tidy on the regression target
+          $APT update
+          $APT install lcov doxygen "libclang-rt-$LLVM_VER-dev"
+      - name: clang-tidy (every finding is an error, see .clang-tidy)
         run: |
-          clang-tidy-18 -p build-q tests/maintenance_regression.cpp 2>&1 | tee tidy.log
-          ! grep -q "error:" tidy.log
+          cmake -S . -B build-tidy -G Ninja -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=$CLANG_CC -DCMAKE_CXX_COMPILER=$CLANG_CXX \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          for source in tests/maintenance_regression.cpp tests/concurrency.cc benchmarks/benchmark.cc fuzz/fuzz_sql.cc; do
+            echo "::group::clang-tidy $source"
+            "$CLANG_TIDY" -p build-tidy "$source"
+            echo "::endgroup::"
+          done
       - name: Coverage
         run: |
-          cmake -S . -B build-cov -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
-            -DSQLITECPP_COVERAGE=ON -DCMAKE_CXX_FLAGS="--coverage"
-            -DCMAKE_EXE_LINKER_FLAGS="--coverage"
-          cmake --build build-cov --parallel 4
+          cmake -S . -B build-cov -G Ninja -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=$GCC_CC -DCMAKE_CXX_COMPILER=$GCC_CXX \
+            -DSQLITECPP_COVERAGE=ON
+          cmake --build build-cov
           ctest --test-dir build-cov --output-on-failure
-          lcov --capture --directory build-cov --output-file coverage.info --ignore-errors mismatch
-          lcov --remove coverage.info '*/vendor/*' '*/tests/*' --output-file coverage.info
-          lcov --summary coverage.info
-      - name: Short fuzz run
+          lcov --gcov-tool "$GCOV_TOOL" --capture --directory build-cov --output-file coverage.info \
+            --ignore-errors mismatch,inconsistent,unused,negative
+          lcov --gcov-tool "$GCOV_TOOL" --extract coverage.info '*/include/SQLiteCpp/*' '*/include/SQLiteCpp.h' \
+            --output-file coverage.info --ignore-errors unused
+          lcov --summary coverage.info | tee coverage-summary.txt
+          {
+            echo '### Coverage of include/'
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fuzz the SQL front end for 60 seconds
         run: |
-          cmake -S . -B build-fuzz -DBUILD_TESTING=ON -DSQLITECPP_BUILD_FUZZERS=ON
-            -DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_C_COMPILER=clang-18
-            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined" -DCMAKE_C_FLAGS="-fsanitize=address,undefined"
-          cmake --build build-fuzz --target sqlitecpp_fuzz_sql --parallel 4
-          ./build-fuzz/sqlitecpp_fuzz_sql -max_total_time=30 -print_final_stats=1
+          cmake -S . -B build-fuzz -G Ninja -DBUILD_TESTING=ON -DSQLITECPP_BUILD_FUZZERS=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=$CLANG_CC -DCMAKE_CXX_COMPILER=$CLANG_CXX \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined" \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-fuzz --target sqlitecpp_fuzz_sql
+          mkdir -p fuzz-run && cd fuzz-run
+          ../build-fuzz/sqlitecpp_fuzz_sql -max_total_time=60 -timeout=10 -rss_limit_mb=2048 -print_final_stats=1
       - name: API docs
         run: |
-          cd docs && doxygen Doxyfile
-      - uses: actions/upload-artifact@v4
+          cd docs
+          doxygen Doxyfile
+          test -f doxygen/html/index.html
+      - uses: actions/upload-artifact@v7
         with:
           name: api-docs
           path: docs/doxygen/html

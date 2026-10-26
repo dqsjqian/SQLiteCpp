@@ -47,7 +47,7 @@ namespace sqlite {
 		class WrapIntoFunctor<ReturnType(*)(Arguments...)> {
 			ReturnType(*ptr)(Arguments...);
 			public:
-				WrapIntoFunctor(ReturnType(*ptr)(Arguments...)): ptr(ptr) {}
+				WrapIntoFunctor(ReturnType(*function)(Arguments...)): ptr(function) {}
 				ReturnType operator()(Arguments... arguments) { return (*ptr)(std::forward<Arguments>(arguments)...); }
 		};
 		inline void store_error_log_data_pointer(std::shared_ptr<void> ptr) {
@@ -78,21 +78,21 @@ namespace sqlite {
 	template<class Handler>
 	typename std::enable_if<detail::is_callable<Handler(const sqlite_exception&)>::value>::type
 	error_log(Handler &&handler) {
-		auto ptr = detail::make_shared_inferred([handler = std::forward<Handler>(handler)](int error_code, const char *errstr) mutable {
+		auto ptr = detail::make_shared_inferred([on_error = std::forward<Handler>(handler)](int error_code, const char *errstr) mutable {
 			  switch(error_code & 0xFF) {
 #define SQLITE_CPP_ERROR_CODE(NAME,name,derived)             \
 				  case SQLITE_ ## NAME: switch(error_code) {                \
 					  derived                                                 \
-				    default: handler(errors::name(errstr, "", error_code)); \
+				    default: on_error(errors::name(errstr, "", error_code)); \
 				  };break;
 #define SQLITE_CPP_ERROR_CODE_EXTENDED(BASE,SUB,base,sub)                    \
 					  case SQLITE_ ## BASE ## _ ## SUB:                                       \
-				      handler(errors::base ## _ ## sub(errstr, "", error_code)); \
+				      on_error(errors::base ## _ ## sub(errstr, "", error_code)); \
 				      break;
 #include "lists/error_codes.h"
 #undef SQLITE_CPP_ERROR_CODE_EXTENDED
 #undef SQLITE_CPP_ERROR_CODE
-				  default: handler(sqlite_exception(errstr, "", error_code)); \
+				  default: on_error(sqlite_exception(errstr, "", error_code)); \
 			  }
 			});
 

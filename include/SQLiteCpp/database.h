@@ -1,5 +1,6 @@
 #pragma once
 
+#include <concepts>
 #include <cstring>
 #include <functional>
 #include <span>
@@ -80,7 +81,8 @@ namespace sqlite {
 		// registered hook never outlives its context.
 		struct connection_state {
 			std::function<int()> progress;
-			std::function<void(int action, std::string database, std::string table,
+			// Views are valid for the duration of the call only.
+			std::function<void(int action, std::string_view database, std::string_view table,
 			                   sqlite3_int64 rowid)> update;
 			std::function<int()> commit;
 			std::function<void()> rollback;
@@ -123,11 +125,11 @@ namespace sqlite {
 			_state(std::make_shared<connection_state>()) {}
 
 		database_binder operator<<(str_ref sql) {
-			return database_binder(_db, _statements, sql);
+			return database_binder(_statements, sql);
 		}
 
 		database_binder operator<<(u16str_ref sql) {
-			return database_binder(_db, _statements, sql);
+			return database_binder(_statements, sql);
 		}
 
 		connection_type connection() const { return _db; }
@@ -180,13 +182,44 @@ namespace sqlite {
 		}
 
 		// Called after INSERT / UPDATE / DELETE. action is SQLITE_INSERT,
-		// SQLITE_UPDATE or SQLITE_DELETE.
-		void on_update(std::function<void(int, std::string, std::string, sqlite3_int64)> handler) {
+		// SQLITE_UPDATE or SQLITE_DELETE. The database and table names are views
+		// into SQLite memory, valid only during the call: copy them to keep
+		// them. An exception thrown by the handler is swallowed.
+		//
+		// Handlers written for 1.1.0, taking std::string names, keep working.
+		template<typename Handler>
+			requires std::invocable<Handler &, int, std::string_view, std::string_view, sqlite3_int64>
+			      || std::invocable<Handler &, int, std::string, std::string, sqlite3_int64>
+		void on_update(Handler &&handler) {
+			if constexpr(std::is_constructible_v<bool, Handler &>) {
+				if(!static_cast<bool>(handler)) {
+					set_update_hook({});
+					return;
+				}
+			}
+			if constexpr(std::invocable<Handler &, int, std::string_view, std::string_view, sqlite3_int64>) {
+				set_update_hook(std::forward<Handler>(handler));
+			} else {
+				set_update_hook([inner = std::forward<Handler>(handler)](
+						int action, std::string_view database_name, std::string_view table_name,
+						sqlite3_int64 rowid) mutable {
+					inner(action, std::string(database_name), std::string(table_name), rowid);
+				});
+			}
+		}
+
+		// Removes the update hook: on_update(nullptr).
+		void on_update(std::nullptr_t) { set_update_hook({}); }
+
+	private:
+		void set_update_hook(std::function<void(int, std::string_view, std::string_view, sqlite3_int64)> handler) {
 			if(!_state) return;
 			_state->update = std::move(handler);
 			sqlite3_update_hook(_db.get(), _state->update ? &database::update_trampoline : nullptr,
 			                    _state->update ? _state.get() : nullptr);
 		}
+
+	public:
 
 		// Returning non-zero from the handler turns the commit into a rollback.
 		void on_commit(std::function<int()> handler) {
@@ -289,7 +322,8 @@ namespace sqlite {
 		// Byte-for-byte image of the database.
 		std::vector<unsigned char> serialize(str_ref schema = "main") {
 			sqlite3_int64 size = 0;
-			unsigned char *data = sqlite3_serialize(_db.get(), schema.data(), &size, 0);
+			const std::string schema_name(schema); // NUL-terminated for SQLite
+			unsigned char *data = sqlite3_serialize(_db.get(), schema_name.c_str(), &size, 0);
 			if(!data || size <= 0) {
 				sqlite3_free(data);
 				return {};
@@ -301,10 +335,11 @@ namespace sqlite {
 
 		// Replaces the database image with the given bytes.
 		void deserialize(std::span<const unsigned char> image, str_ref schema = "main") {
+			const std::string schema_name(schema); // NUL-terminated for SQLite
 			auto *buffer = static_cast<unsigned char *>(sqlite3_malloc64(image.size()));
 			if(!buffer) errors::throw_sqlite_error(SQLITE_NOMEM, "deserialize");
 			if(!image.empty()) std::memcpy(buffer, image.data(), image.size());
-			if(int rc = sqlite3_deserialize(_db.get(), schema.data(), buffer,
+			if(int rc = sqlite3_deserialize(_db.get(), schema_name.c_str(), buffer,
 			                                static_cast<sqlite3_int64>(image.size()),
 			                                static_cast<sqlite3_int64>(image.size()),
 			                                SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE))
@@ -329,11 +364,11 @@ namespace sqlite {
 				statement.execute();
 				return execution_result{rows_modified(), SQLITE_OK, {}};
 			} catch(const sqlite_exception &error) {
-				return execution_result{0, error.get_extended_code(), error.what()};
+				return failed_execution(error.get_extended_code(), error.what());
 			} catch(const std::exception &error) {
-				return execution_result{0, SQLITE_ERROR, error.what()};
+				return failed_execution(SQLITE_ERROR, error.what());
 			} catch(...) {
-				return execution_result{0, SQLITE_ERROR, "unknown error"};
+				return failed_execution(SQLITE_ERROR, "unknown error");
 			}
 		}
 
@@ -351,6 +386,14 @@ namespace sqlite {
 			sqlite3_int64 executed = 0;
 			try {
 				if(stmt) {
+					// Every row rebinds the same leading parameters; anything
+					// beyond the tuple is bound to NULL once, so values left by an
+					// earlier user of the cached statement never leak in.
+					constexpr int width = static_cast<int>(
+						std::tuple_size_v<std::remove_cvref_t<std::ranges::range_value_t<Range>>>);
+					for(int index = width + 1, count = sqlite3_bind_parameter_count(stmt);
+					    index <= count; ++index)
+						sqlite3_bind_null(stmt, index);
 					for(const auto &row : rows) {
 						std::apply([stmt](const auto &...values) {
 							int index = 1;
@@ -362,49 +405,73 @@ namespace sqlite {
 							errors::throw_sqlite_error(rc, sql, sqlite3_errmsg(_db.get()));
 						++executed;
 						sqlite3_reset(stmt);
-						sqlite3_clear_bindings(stmt);
 					}
 				}
 			} catch(...) {
 				if(!owned) _statements->release(slot);
 				throw;
 			}
-			if(!owned) _statements->release(slot);
+			// Every row ended with a reset, so release has nothing left to do.
+			if(!owned) _statements->release(slot, false);
 			return executed;
 		}
 
 	private:
-		static int progress_trampoline(void *context) {
-			auto *state = static_cast<connection_state *>(context);
-			return state && state->progress ? state->progress() : 0;
+		// Builds a failure without letting an allocation failure escape the
+		// noexcept try_execute: the code alone still reports the failure.
+		static execution_result failed_execution(int code, const char *message) noexcept {
+			execution_result result;
+			result.code = code == SQLITE_OK ? SQLITE_ERROR : code;
+			try {
+				result.error = message;
+			} catch(...) { // NOLINT(bugprone-empty-catch)
+				// Out of memory: keep the code, drop the message.
+			}
+			return result;
 		}
 
-		static void update_trampoline(void *context, int action, const char *database_name,
-		                              const char *table_name, sqlite3_int64 rowid) {
+		// Every trampoline is noexcept and catches everything: an exception must
+		// never unwind through SQLite's C frames.
+		static int progress_trampoline(void *context) noexcept {
 			auto *state = static_cast<connection_state *>(context);
-			if(state && state->update) {
-				try {
-					state->update(action,
-					              database_name ? database_name : "",
-					              table_name ? table_name : "", rowid);
-				} catch(...) {
-					// A hook must never propagate into SQLite's C frames.
-				}
+			if(!state || !state->progress) return 0;
+			try {
+				return state->progress();
+			} catch(...) {
+				return 1; // a failing handler interrupts the statement
 			}
 		}
 
-		static int commit_trampoline(void *context) {
+		static void update_trampoline(void *context, int action, const char *database_name,
+		                              const char *table_name, sqlite3_int64 rowid) noexcept {
 			auto *state = static_cast<connection_state *>(context);
-			return state && state->commit ? state->commit() : 0;
+			if(!state || !state->update) return;
+			try {
+				state->update(action,
+				              database_name ? std::string_view(database_name) : std::string_view(),
+				              table_name ? std::string_view(table_name) : std::string_view(), rowid);
+			} catch(...) { // NOLINT(bugprone-empty-catch)
+				// The row change has already happened; there is nothing to undo.
+			}
 		}
 
-		static void rollback_trampoline(void *context) {
+		static int commit_trampoline(void *context) noexcept {
 			auto *state = static_cast<connection_state *>(context);
-			if(state && state->rollback) {
-				try {
-					state->rollback();
-				} catch(...) {
-				}
+			if(!state || !state->commit) return 0;
+			try {
+				return state->commit();
+			} catch(...) {
+				return 1; // a failing handler turns the commit into a rollback
+			}
+		}
+
+		static void rollback_trampoline(void *context) noexcept {
+			auto *state = static_cast<connection_state *>(context);
+			if(!state || !state->rollback) return;
+			try {
+				state->rollback();
+			} catch(...) { // NOLINT(bugprone-empty-catch)
+				// The rollback has already happened; there is nothing to undo.
 			}
 		}
 

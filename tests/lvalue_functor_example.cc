@@ -11,7 +11,7 @@ struct builder {
 
     void operator()(AttrTypes... args) {
       results.emplace_back(std::forward<AttrTypes&&>(args)...);
-    };
+    }
 };
 
 
@@ -27,7 +27,7 @@ struct user_record {
       db << "SELECT * FROM user;"
         >> person_builder;
       return std::move(person_builder.results); // move to avoid copying data ;-)
-    };
+    }
 };
 
 int main() {

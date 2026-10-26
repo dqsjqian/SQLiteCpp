@@ -14,6 +14,8 @@ endif()
 
 add_library(sqlite3_core STATIC "${_sqlite_dir}/sqlite3.c")
 target_include_directories(sqlite3_core PUBLIC "${_sqlite_dir}")
+find_package(Threads REQUIRED)
+target_link_libraries(sqlite3_core PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 
 add_executable(consumer ../maintenance_regression.cpp)
 target_compile_features(consumer PRIVATE cxx_std_23)

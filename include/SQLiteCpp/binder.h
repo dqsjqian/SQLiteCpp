@@ -27,11 +27,13 @@ namespace sqlite {
 		database_binder(const database_binder& other) = delete;
 		database_binder& operator=(const database_binder&) = delete;
 
-		database_binder(database_binder&& other) :
+		database_binder(database_binder&& other) noexcept :
 			_cache(std::move(other._cache)),
 			_slot(other._slot),
 			_owned(std::move(other._owned)),
-			_inx(other._inx), execution_started(other.execution_started) {
+			_inx(other._inx), execution_started(other.execution_started),
+			_stepped(other._stepped), _reset_done(other._reset_done),
+			_neutralised(other._neutralised) {
 			other._slot = nullptr;
 		}
 
@@ -79,11 +81,16 @@ namespace sqlite {
 			return sql ? sql : std::string();
 		}
 
+		// used(false) marks the binder as not executed, so the destructor runs
+		// it again with the bindings of the last round; used(true) suppresses
+		// the implicit execution.
 		void used(bool state) {
-			if(!state) {
-				// We may have to reset first if we haven't done so already:
-				_next_index();
-				--_inx;
+			if(!state && _stepped) {
+				if(!_reset_done) sqlite3_reset(_stmt());
+				_reset_done = true;
+				_stepped = false;
+				_inx = 0;
+				_neutralised = true; // keep the last round's values
 			}
 			execution_started = state;
 		}
@@ -99,22 +106,62 @@ namespace sqlite {
 		std::unique_ptr<detail::statement_slot> _owned;
 		utility::UncaughtExceptionDetector _has_uncaught_exception;
 
-		int _inx = 0;
-
-		bool execution_started = false;
-		// Set by execute(), cleared by any bind or iteration: tracks whether the
-		// statement is already reset.
-		bool _reset_done = true;
+		// A "round" is: bind parameters, then step. The statement may come from
+		// the cache with bindings left by an earlier round, so every round makes
+		// sure parameters it did not bind read as NULL, exactly as on a freshly
+		// prepared statement.
+		int _inx = 0;                   // sequential parameter cursor of this round
+		bool execution_started = false; // used(): executed at least once
+		bool _stepped = false;          // this round has been stepped
+		bool _reset_done = true;        // nothing to reset on release
+		bool _neutralised = false;      // unbound parameters of this round are NULL
 
 		sqlite3_stmt *_stmt() const { return _slot ? _slot->stmt.get() : nullptr; }
 
+		// A bind after the round was stepped opens a new round.
+		void _begin_bind() {
+			if(!_stepped) return;
+			if(!_reset_done) sqlite3_reset(_stmt());
+			_reset_done = true;
+			_stepped = false;
+			_inx = 0;
+			_neutralised = false;
+		}
+
+		// Binds NULL to every parameter after `last`. When the round binds every
+		// parameter in order this loop runs zero times.
+		void _neutralise_after(int last) {
+			const int count = sqlite3_bind_parameter_count(_stmt());
+			for(int index = last + 1; index <= count; ++index)
+				sqlite3_bind_null(_stmt(), index);
+			_neutralised = true;
+		}
+
 		int _next_index() {
-			_reset_done = false;
-			if(execution_started && !_inx) {
-				sqlite3_reset(_stmt());
-				sqlite3_clear_bindings(_stmt());
-			}
+			_begin_bind();
 			return ++_inx;
+		}
+
+		// Positional or named binds can land anywhere, so stale values are
+		// cleared before the first one instead of at the first step.
+		void _prepare_explicit_bind() {
+			_begin_bind();
+			if(!_neutralised) _neutralise_after(_inx);
+		}
+
+		// Runs right before the first step. Re-running a round that already
+		// stepped keeps its bindings, like sqlite3_reset does.
+		void _begin_step() {
+			if(_stepped) {
+				if(!_reset_done) sqlite3_reset(_stmt());
+			} else if(!_neutralised) {
+				_neutralise_after(_inx);
+			}
+			_stepped = true;
+			_reset_done = false;
+			// Marked before stepping: if the step throws, the destructor must not
+			// run the statement a second time.
+			execution_started = true;
 		}
 
 		template<typename T> friend database_binder& operator<<(database_binder& db, T&&);
@@ -124,19 +171,17 @@ namespace sqlite {
 
 	public:
 
-		database_binder(std::shared_ptr<sqlite3> db, std::shared_ptr<detail::statement_cache> cache, str_ref sql):
+		database_binder(std::shared_ptr<detail::statement_cache> cache, str_ref sql):
 			_cache(std::move(cache)),
 			_inx(0) {
-			(void)db;
 			auto borrowed = _cache->acquire(sql);
 			_slot = borrowed.first;
 			if(!borrowed.second) _owned.reset(_slot);
 		}
 
-		database_binder(std::shared_ptr<sqlite3> db, std::shared_ptr<detail::statement_cache> cache, u16str_ref sql):
+		database_binder(std::shared_ptr<detail::statement_cache> cache, u16str_ref sql):
 			_cache(std::move(cache)),
 			_inx(0) {
-			(void)db;
 			const std::string utf8 = utility::utf16_to_utf8(sql);
 			auto borrowed = _cache->acquire(utf8);
 			_slot = borrowed.first;
@@ -161,7 +206,7 @@ namespace sqlite {
 	public:
 		class value_type {
 		public:
-			value_type(database_binder *_binder): _binder(_binder) {};
+			value_type(database_binder *binder): _binder(binder) {}
 			template<class T>
 			typename std::enable_if<is_sqlite_value<T>::value, value_type &>::type operator >>(T &result) {
 				result = get_col_from_db(_binder->_stmt(), next_index++, result_type<T>());
@@ -179,9 +224,9 @@ namespace sqlite {
 			}
 			template<class ...Types>
 			operator std::tuple<Types...>() {
-				std::tuple<Types...> value;
-				*this >> value;
-				return value;
+				std::tuple<Types...> values;
+				*this >> values;
+				return values;
 			}
 			// Reads the next columns as the given types, enabling structured
 			// bindings: auto [id, name] = row.as<int, std::string>();
@@ -213,9 +258,8 @@ namespace sqlite {
 
 		row_iterator() = default;
 		explicit row_iterator(database_binder &binder): _binder(&binder) {
-			_binder->_next_index();
-			_binder->_inx = 0;
-			_binder->used(true);
+			if(_binder->_stmt()) _binder->_begin_step();
+			else _binder->execution_started = true;
 			++*this;
 		}
 
@@ -269,21 +313,22 @@ namespace sqlite {
 		}
 	}
 	inline void database_binder::execute() {
+		if(!_stmt()) {
+			execution_started = true;
+			return;
+		}
 		// Step directly instead of materialising the row iterator: same
 		// semantics, less per-row work on the hot path.
-		if(_stmt()) {
-			while(true) {
-				const int rc = sqlite3_step(_stmt());
-				if(rc == SQLITE_ROW) continue;
-				if(rc == SQLITE_DONE) break;
-				errors::throw_sqlite_error(rc, sql(), sqlite3_errmsg(_cache->connection()));
-			}
+		_begin_step();
+		while(true) {
+			const int rc = sqlite3_step(_stmt());
+			if(rc == SQLITE_ROW) continue;
+			if(rc == SQLITE_DONE) break;
+			errors::throw_sqlite_error(rc, sql(), sqlite3_errmsg(_cache->connection()));
 		}
-		execution_started = true;
-		// Make the binder reusable straight away: the next bind starts at
-		// parameter 1 and no stale bindings survive.
-		_inx = 0;
-		if(_stmt()) sqlite3_reset(_stmt());
+		// Reset now so locks are released and the binder can be rebound; the
+		// cache then has nothing left to do on release.
+		sqlite3_reset(_stmt());
 		_reset_done = true;
 	}
 	namespace detail {
@@ -366,7 +411,7 @@ namespace sqlite {
 	void inline operator++(database_binder& db, int) { db.execute(); }
 
 	template<typename T> database_binder &operator<<(database_binder& db, index_binding_helper<T> val) {
-		db._next_index(); --db._inx;
+		db._prepare_explicit_bind();
 		int result = bind_col_in_db(db._stmt(), val.index, std::forward<T>(val.value));
 		if(result != SQLITE_OK)
 			exceptions::throw_sqlite_error(result, db.sql(), sqlite3_errmsg(db._cache->connection()));
@@ -374,7 +419,7 @@ namespace sqlite {
 	}
 
 	template<typename T> database_binder &operator<<(database_binder& db, index_binding_helper<T, true> val) {
-		db._next_index(); --db._inx;
+		db._prepare_explicit_bind();
 		int index = sqlite3_bind_parameter_index(db._stmt(), val.index);
 		if(!index)
 			throw errors::unknown_binding("The given binding name is not valid for this statement", db.sql());

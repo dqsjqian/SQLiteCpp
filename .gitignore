@@ -1,8 +1,17 @@
 # Build trees
 build/
-build-asan/
-build-consumer/
+build-*/
 stage/
+
+# Generated docs, coverage and fuzzing artifacts
+docs/doxygen/
+coverage.info
+coverage-summary.txt
+fuzz-run/
+crash-*
+leak-*
+timeout-*
+oom-*
 
 # Platform noise
 .DS_Store

@@ -3,7 +3,7 @@
 // Version of the library itself, independent of the SQLite version it wraps.
 #define SQLITE_CPP_VERSION_MAJOR 1
 #define SQLITE_CPP_VERSION_MINOR 1
-#define SQLITE_CPP_VERSION_PATCH 0
+#define SQLITE_CPP_VERSION_PATCH 1
 
 // SQLiteCpp requires C++23.
 //

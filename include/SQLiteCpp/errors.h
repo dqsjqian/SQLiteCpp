@@ -10,10 +10,12 @@ namespace sqlite {
 
 	class sqlite_exception: public std::runtime_error {
 	public:
-		sqlite_exception(const char* msg, str_ref sql, int code = -1, int offset = -1):
-			runtime_error(build_message(msg, code, offset)), code(code), offset(offset), sql(sql) {}
-		sqlite_exception(int code, str_ref sql, const char *msg = nullptr, int offset = -1):
-			runtime_error(build_message(msg ? msg : sqlite3_errstr(code), code, offset)), code(code), offset(offset), sql(sql) {}
+		sqlite_exception(const char* msg, str_ref statement, int result_code = -1, int error_offset = -1):
+			runtime_error(build_message(msg, result_code, error_offset)),
+			code(result_code), offset(error_offset), sql(statement) {}
+		sqlite_exception(int result_code, str_ref statement, const char *msg = nullptr, int error_offset = -1):
+			runtime_error(build_message(msg ? msg : sqlite3_errstr(result_code), result_code, error_offset)),
+			code(result_code), offset(error_offset), sql(statement) {}
 		int get_code() const {return code & 0xFF;}
 		int get_extended_code() const {return code;}
 		// Byte offset into the SQL text where the problem was detected, or -1
@@ -42,6 +44,9 @@ namespace sqlite {
 		//SQLITE_OK, SQLITE_NOTICE, SQLITE_WARNING, SQLITE_ROW, SQLITE_DONE
 		//
 		//Note these names are exact matches to the names of the SQLITE error codes.
+		// The X-macros below paste class and case names, which cannot be
+		// parenthesised.
+		// NOLINTBEGIN(bugprone-macro-parentheses)
 #define SQLITE_CPP_ERROR_CODE(NAME,name,derived) \
 		class name: public sqlite_exception { using sqlite_exception::sqlite_exception; };\
 		derived
@@ -82,6 +87,7 @@ namespace sqlite {
 #include "lists/error_codes.h"
 #undef SQLITE_CPP_ERROR_CODE_EXTENDED
 #undef SQLITE_CPP_ERROR_CODE
+		// NOLINTEND(bugprone-macro-parentheses)
 				default: throw sqlite_exception(error_code, sql, errmsg, offset);
 			}
 		}
