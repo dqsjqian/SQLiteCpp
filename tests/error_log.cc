@@ -27,7 +27,7 @@ int main() {
     db << "INSERT INTO person (id,name) VALUES (?,?)" << 1 << "jack";
     // inserting again to produce error
     db << "INSERT INTO person (id,name) VALUES (?,?)" << 1 << "jack";
-  } catch (errors::constraint& e) {
+  } catch (const errors::constraint &) {
   }
 
   if(!error_detected) {

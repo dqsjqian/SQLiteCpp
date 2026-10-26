@@ -83,8 +83,9 @@ namespace sqlite {
 #define SQLITE_CPP_ERROR_CODE(NAME,name,derived)             \
 				  case SQLITE_ ## NAME: switch(error_code) {                \
 					  derived                                                 \
+				    case SQLITE_ ## NAME:                                     \
 				    default: on_error(errors::name(errstr, "", error_code)); \
-				  };break;
+				  } break;
 #define SQLITE_CPP_ERROR_CODE_EXTENDED(BASE,SUB,base,sub)                    \
 					  case SQLITE_ ## BASE ## _ ## SUB:                                       \
 				      on_error(errors::base ## _ ## sub(errstr, "", error_code)); \
@@ -92,7 +93,7 @@ namespace sqlite {
 #include "lists/error_codes.h"
 #undef SQLITE_CPP_ERROR_CODE_EXTENDED
 #undef SQLITE_CPP_ERROR_CODE
-				  default: on_error(sqlite_exception(errstr, "", error_code)); \
+				  default: on_error(sqlite_exception(errstr, "", error_code));
 			  }
 			});
 

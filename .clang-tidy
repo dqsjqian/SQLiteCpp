@@ -10,10 +10,16 @@
 #                                         SQLite's documented integer sentinels
 #   portability-avoid-pragma-once         every supported compiler implements
 #                                         #pragma once
+#   bugprone-signed-bitwise               C++20 made signed integers two's
+#                                         complement, so these operations are
+#                                         well defined. The hits are SQLite's
+#                                         signed int flags / result codes and
+#                                         int literals masking char32_t
 Checks: >
   -*,
   bugprone-*,
   -bugprone-easily-swappable-parameters,
+  -bugprone-signed-bitwise,
   performance-*,
   -performance-enum-size,
   -performance-no-int-to-ptr,

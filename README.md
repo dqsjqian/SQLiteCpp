@@ -129,20 +129,20 @@ db.on_update(nullptr);     // 移除钩子
 
 ## 平台支持
 
-所有任务都以警告即错误构建（GCC/Clang 为 `-Wall -Wextra -Wpedantic -Werror`，MSVC 与 clang-cl 为 `/W4 /WX /permissive-`），运行在 GitHub 的 `-latest` 镜像上；Linux 任务自动选用镜像上预装的最新 GCC 和 Clang。
+所有任务都以警告即错误构建（GCC/Clang 为 `-Wall -Wextra -Wpedantic -Werror`，MSVC 与 clang-cl 为 `/W4 /WX /permissive-`），运行在 GitHub 的 `-latest` 镜像上，编译器一律使用最新稳定版，不依赖镜像预装的旧版本：GCC 16 取自官方 `gcc:16` 镜像，LLVM/Clang 23 在 Linux 上取自 LLVM 官方 apt 源、在 Windows 上取自 LLVM 官方发布包。
 
 | 平台 | Runner | 工具链 | 验证内容 |
 |---|---|---|---|
-| Linux x86-64 | `ubuntu-latest` | 最新 GCC 与 Clang，libstdc++ 与 libc++，Debug 与 Release | 构建、测试、安装 |
-| Linux ARM64 | `ubuntu-26.04-arm` | 最新 GCC，原生运行 | 构建、测试 |
-| macOS | `macos-latest` | AppleClang | 构建、测试、安装 |
-| iOS | `macos-latest` | AppleClang，模拟器 arm64 | 构建 |
-| Android | `ubuntu-latest` | 最新 NDK，arm64-v8a 与 armeabi-v7a | 构建 |
-| Windows x64 | `windows-latest` | MSVC 与 clang-cl（Visual Studio 2026） | 构建、测试 |
-| Windows ARM64 | `windows-11-vs2026-arm` | MSVC，原生运行 | 构建、测试 |
-| Windows MinGW | `windows-latest` | MSYS2 UCRT64 GCC | 构建、测试 |
+| Linux x86-64 | `ubuntu-latest` | GCC 16；Clang 23（libstdc++ 与 libc++），Debug 与 Release | 构建、测试、安装 |
+| Linux ARM64 | `ubuntu-26.04-arm` | GCC 16，原生运行 | 构建、测试 |
+| macOS | `macos-latest` | AppleClang（镜像上最新的正式版 Xcode） | 构建、测试、安装 |
+| iOS | `macos-latest` | AppleClang（同上），模拟器 arm64 | 构建 |
+| Android | `ubuntu-latest` | NDK r30（镜像上最新），arm64-v8a 与 armeabi-v7a | 构建 |
+| Windows x64 | `windows-latest` | MSVC（Visual Studio 2026）；clang-cl 23 | 构建、测试 |
+| Windows ARM64 | `windows-11-vs2026-arm` | MSVC（Visual Studio 2026），原生运行 | 构建、测试 |
+| Windows MinGW | `windows-latest` | MSYS2 UCRT64 GCC（随 MSYS2 更新，当前 16.2） | 构建、测试 |
 
-每次推送的质量门禁：AddressSanitizer + UndefinedBehaviorSanitizer、ThreadSanitizer、clang-tidy（缺陷类检查，发现即失败）、`include/` 的 lcov 覆盖率、针对 SQL 前端的 60 秒 libFuzzer、Doxygen API 文档、每个公开头文件单独编译。
+每次推送的质量门禁：AddressSanitizer + UndefinedBehaviorSanitizer（GCC 16）、ThreadSanitizer（Clang 23）、clang-tidy 23（缺陷类检查，发现即失败）、`include/` 的 lcov 覆盖率、针对 SQL 前端的 60 秒 libFuzzer、Doxygen API 文档、每个公开头文件单独编译。
 
 ## 环境要求
 
@@ -199,7 +199,7 @@ target_link_libraries(app PRIVATE SQLiteCpp::SQLiteCpp sqlite3_core)
 | `benchmarks/` | 对比裸 C API 的微基准 |
 | `fuzz/` | libFuzzer 目标 |
 | `docs/` | Doxygen 配置 |
-| `.github/` | CI 工作流与工具链选择脚本 |
+| `.github/` | CI 工作流与工具链安装脚本 |
 
 ## 许可证
 

@@ -29,7 +29,7 @@ namespace sqlite {
 			if(offset >= 0) {
 				message += " [byte offset ";
 				message += std::to_string(offset);
-				message += "]";
+				message += ']';
 			}
 			return message;
 		}
@@ -71,7 +71,7 @@ namespace sqlite {
 				annotated = errmsg ? errmsg : sqlite3_errstr(error_code);
 				annotated += " [byte offset ";
 				annotated += std::to_string(offset);
-				annotated += "]";
+				annotated += ']';
 				errmsg = annotated.c_str();
 			}
 			switch(error_code & 0xFF) {

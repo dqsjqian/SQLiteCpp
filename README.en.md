@@ -169,24 +169,26 @@ result really is a single row. Holding the statement removes the lookup;
 
 Every job builds with warnings as errors
 (`-Wall -Wextra -Wpedantic -Werror`, `/W4 /WX /permissive-` for MSVC and
-clang-cl) and runs on GitHub's `-latest` runner images. Linux jobs pick the
-newest GCC and Clang preinstalled on the image.
+clang-cl) and runs on GitHub's `-latest` runner images. Every compiler is the
+newest stable release rather than whatever the image happens to preinstall:
+GCC 16 from the official `gcc:16` image, LLVM/Clang 23 from the LLVM project's
+apt repository on Linux and its release package on Windows.
 
 | Platform | Runner | Toolchain | Verified |
 |---|---|---|---|
-| Linux x86-64 | `ubuntu-latest` | newest GCC and Clang, libstdc++ and libc++, Debug and Release | build, tests, install |
-| Linux ARM64 | `ubuntu-26.04-arm` | newest GCC, native | build, tests |
-| macOS | `macos-latest` | AppleClang | build, tests, install |
-| iOS | `macos-latest` | AppleClang, simulator arm64 | build |
-| Android | `ubuntu-latest` | newest NDK, arm64-v8a and armeabi-v7a | build |
-| Windows x64 | `windows-latest` | MSVC and clang-cl (Visual Studio 2026) | build, tests |
-| Windows ARM64 | `windows-11-vs2026-arm` | MSVC, native | build, tests |
-| Windows MinGW | `windows-latest` | MSYS2 UCRT64 GCC | build, tests |
+| Linux x86-64 | `ubuntu-latest` | GCC 16; Clang 23 (libstdc++ and libc++), Debug and Release | build, tests, install |
+| Linux ARM64 | `ubuntu-26.04-arm` | GCC 16, native | build, tests |
+| macOS | `macos-latest` | AppleClang (newest released Xcode on the image) | build, tests, install |
+| iOS | `macos-latest` | AppleClang (same), simulator arm64 | build |
+| Android | `ubuntu-latest` | NDK r30 (newest on the image), arm64-v8a and armeabi-v7a | build |
+| Windows x64 | `windows-latest` | MSVC (Visual Studio 2026); clang-cl 23 | build, tests |
+| Windows ARM64 | `windows-11-vs2026-arm` | MSVC (Visual Studio 2026), native | build, tests |
+| Windows MinGW | `windows-latest` | MSYS2 UCRT64 GCC (tracks MSYS2, currently 16.2) | build, tests |
 
-Quality gates on every push: AddressSanitizer + UndefinedBehaviorSanitizer,
-ThreadSanitizer, clang-tidy (defect checks, findings are errors), lcov
-coverage of `include/`, a 60-second libFuzzer run over the SQL front end,
-Doxygen API docs, and every public header compiled on its own.
+Quality gates on every push: AddressSanitizer + UndefinedBehaviorSanitizer
+(GCC 16), ThreadSanitizer (Clang 23), clang-tidy 23 (defect checks, findings
+are errors), lcov coverage of `include/`, a 60-second libFuzzer run over the
+SQL front end, Doxygen API docs, and every public header compiled on its own.
 
 ## Requirements
 
@@ -248,7 +250,7 @@ target_link_libraries(app PRIVATE SQLiteCpp::SQLiteCpp sqlite3_core)
 | `benchmarks/` | micro-benchmarks against the raw C API |
 | `fuzz/` | libFuzzer target |
 | `docs/` | Doxygen configuration |
-| `.github/` | CI workflow and toolchain selection |
+| `.github/` | CI workflow and toolchain setup scripts |
 
 ## License
 

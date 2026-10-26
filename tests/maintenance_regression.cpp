@@ -1,6 +1,7 @@
 #include <SQLiteCpp.h>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -309,6 +310,20 @@ static void run_suite() {
         db.execute("INSERT INTO hooked VALUES (4)");
         db.on_update(nullptr);
         CHECK(legacy_table == "hooked");
+
+        // an empty std::function or a null function pointer removes the hook;
+        // a captureless lambda (convertible to a function pointer) installs it
+        int stateless_calls = 0;
+        static int *stateless_counter = nullptr;
+        stateless_counter = &stateless_calls;
+        db.on_update([](int, std::string_view, std::string_view, sqlite3_int64) { ++*stateless_counter; });
+        db.execute("INSERT INTO hooked VALUES (5)");
+        CHECK(stateless_calls == 1);
+        db.on_update(std::function<void(int, std::string_view, std::string_view, sqlite3_int64)>{});
+        void (*no_handler)(int, std::string_view, std::string_view, sqlite3_int64) = nullptr;
+        db.on_update(no_handler);
+        db.execute("INSERT INTO hooked VALUES (6)");
+        CHECK(stateless_calls == 1);
     }
 
     // explain returns the query plan

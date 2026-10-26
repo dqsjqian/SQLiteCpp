@@ -188,7 +188,10 @@ namespace sqlite {
 			if(!borrowed.second) _owned.reset(_slot);
 		}
 
-		~database_binder() noexcept(false) {
+		// Throwing is the contract here: a statement that was never consumed
+		// runs at the end of the full expression and reports its failure. It
+		// does not throw while another exception is in flight.
+		~database_binder() noexcept(false) { // NOLINT(bugprone-unsafe-to-allow-exceptions)
 			/* Will be executed if no >>op is found, but not if an exception
 			is in mid flight */
 			if(!used() && !_has_uncaught_exception && _slot) {

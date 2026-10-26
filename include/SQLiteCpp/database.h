@@ -35,6 +35,13 @@ namespace sqlite {
 		}
 	}
 
+	namespace detail {
+		template<typename T>
+		inline constexpr bool is_std_function_v = false;
+		template<typename Signature>
+		inline constexpr bool is_std_function_v<std::function<Signature>> = true;
+	}
+
 	enum class OpenFlags {
 		READONLY = SQLITE_OPEN_READONLY,
 		READWRITE = SQLITE_OPEN_READWRITE,
@@ -191,8 +198,11 @@ namespace sqlite {
 			requires std::invocable<Handler &, int, std::string_view, std::string_view, sqlite3_int64>
 			      || std::invocable<Handler &, int, std::string, std::string, sqlite3_int64>
 		void on_update(Handler &&handler) {
-			if constexpr(std::is_constructible_v<bool, Handler &>) {
-				if(!static_cast<bool>(handler)) {
+			// Only a function pointer or a std::function can be empty; a lambda
+			// that merely converts to a function pointer never is.
+			using handler_type = std::remove_cvref_t<Handler>;
+			if constexpr(std::is_pointer_v<handler_type> || detail::is_std_function_v<handler_type>) {
+				if(handler == nullptr) {
 					set_update_hook({});
 					return;
 				}

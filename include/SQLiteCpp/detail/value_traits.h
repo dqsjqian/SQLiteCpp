@@ -66,11 +66,11 @@ namespace sqlite {
 	inline void store_result_in_db(sqlite3_context* db, const int& val) {
 		sqlite3_result_int(db, val);
 	}
- [[nodiscard]] inline int get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<int>) {
+	[[nodiscard]] inline int get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<int>) {
 		return sqlite3_column_type(stmt, inx) == SQLITE_NULL ? 0 :
 			sqlite3_column_int(stmt, inx);
 	}
- [[nodiscard]] inline int get_val_from_db(sqlite3_value *value, result_type<int>) {
+	[[nodiscard]] inline int get_val_from_db(sqlite3_value *value, result_type<int>) {
 		return sqlite3_value_type(value) == SQLITE_NULL ? 0 :
 			sqlite3_value_int(value);
 	}
@@ -85,11 +85,11 @@ namespace sqlite {
 	inline void store_result_in_db(sqlite3_context* db, const sqlite_int64& val) {
 		sqlite3_result_int64(db, val);
 	}
- [[nodiscard]] inline sqlite_int64 get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<sqlite_int64 >) {
+	[[nodiscard]] inline sqlite_int64 get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<sqlite_int64 >) {
 		return sqlite3_column_type(stmt, inx) == SQLITE_NULL ? 0 :
 			sqlite3_column_int64(stmt, inx);
 	}
- [[nodiscard]] inline sqlite3_int64 get_val_from_db(sqlite3_value *value, result_type<sqlite3_int64>) {
+	[[nodiscard]] inline sqlite3_int64 get_val_from_db(sqlite3_value *value, result_type<sqlite3_int64>) {
 		return sqlite3_value_type(value) == SQLITE_NULL ? 0 :
 			sqlite3_value_int64(value);
 	}
@@ -104,11 +104,11 @@ namespace sqlite {
 	inline void store_result_in_db(sqlite3_context* db, const float& val) {
 		sqlite3_result_double(db, val);
 	}
- [[nodiscard]] inline float get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<float>) {
+	[[nodiscard]] inline float get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<float>) {
 		return sqlite3_column_type(stmt, inx) == SQLITE_NULL ? 0.0f :
 			static_cast<float>(sqlite3_column_double(stmt, inx));
 	}
- [[nodiscard]] inline float get_val_from_db(sqlite3_value *value, result_type<float>) {
+	[[nodiscard]] inline float get_val_from_db(sqlite3_value *value, result_type<float>) {
 		return sqlite3_value_type(value) == SQLITE_NULL ? 0.0f :
 			static_cast<float>(sqlite3_value_double(value));
 	}
@@ -123,11 +123,11 @@ namespace sqlite {
 	inline void store_result_in_db(sqlite3_context* db, const double& val) {
 		sqlite3_result_double(db, val);
 	}
- [[nodiscard]] inline double get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<double>) {
+	[[nodiscard]] inline double get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<double>) {
 		return sqlite3_column_type(stmt, inx) == SQLITE_NULL ? 0 :
 			sqlite3_column_double(stmt, inx);
 	}
- [[nodiscard]] inline double get_val_from_db(sqlite3_value *value, result_type<double>) {
+	[[nodiscard]] inline double get_val_from_db(sqlite3_value *value, result_type<double>) {
 		return sqlite3_value_type(value) == SQLITE_NULL ? 0 :
 			sqlite3_value_double(value);
 	}
@@ -153,10 +153,10 @@ namespace sqlite {
 	inline void store_result_in_db(sqlite3_context* db, std::monostate) {
 		sqlite3_result_null(db);
 	}
- [[nodiscard]] inline std::monostate get_col_from_db(sqlite3_stmt*, int, result_type<std::monostate>) {
+	[[nodiscard]] inline std::monostate get_col_from_db(sqlite3_stmt*, int, result_type<std::monostate>) {
 		return std::monostate();
 	}
- [[nodiscard]] inline std::monostate get_val_from_db(sqlite3_value*, result_type<std::monostate>) {
+	[[nodiscard]] inline std::monostate get_val_from_db(sqlite3_value*, result_type<std::monostate>) {
 		return std::monostate();
 	}
 #endif
@@ -212,7 +212,7 @@ namespace sqlite {
 		return sqlite3_bind_text64(stmt, inx, &STR[0], N - 1, SQLITE_TRANSIENT, SQLITE_UTF8);
 	}
 
- [[nodiscard]] inline std::string get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<std::string>) {
+	[[nodiscard]] inline std::string get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<std::string>) {
 		if ( sqlite3_column_type(stmt, inx) == SQLITE_NULL ) {
 			return std::string();
 		}
@@ -220,7 +220,7 @@ namespace sqlite {
 		// call sqlite3_column_text explicitely before sqlite3_column_bytes: it may convert the value to text
 		return std::string(ptr, sqlite3_column_bytes(stmt, inx));
 	}
- [[nodiscard]] inline std::string  get_val_from_db(sqlite3_value *value, result_type<std::string>) {
+	[[nodiscard]] inline std::string  get_val_from_db(sqlite3_value *value, result_type<std::string>) {
 		if ( sqlite3_value_type(value) == SQLITE_NULL ) {
 			return std::string();
 		}
@@ -251,7 +251,7 @@ namespace sqlite {
 		                           sizeof(char16_t) * (N - 1), SQLITE_TRANSIENT, SQLITE_UTF16);
 	}
 
- [[nodiscard]] inline std::u16string get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<std::u16string>) {
+	[[nodiscard]] inline std::u16string get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<std::u16string>) {
 		if ( sqlite3_column_type(stmt, inx) == SQLITE_NULL ) {
 			return std::u16string();
 		}
@@ -259,7 +259,7 @@ namespace sqlite {
 		// call sqlite3_column_text16 explicitely before sqlite3_column_bytes16: it may convert the value to text
 		return std::u16string(ptr, sqlite3_column_bytes16(stmt, inx) / sizeof(char16_t));
 	}
- [[nodiscard]] inline std::u16string  get_val_from_db(sqlite3_value *value, result_type<std::u16string>) {
+	[[nodiscard]] inline std::u16string  get_val_from_db(sqlite3_value *value, result_type<std::u16string>) {
 		if ( sqlite3_value_type(value) == SQLITE_NULL ) {
 			return std::u16string();
 		}
@@ -286,12 +286,14 @@ namespace sqlite {
 		store_result_in_db(db, static_cast<sqlite3_int64>(val));
 	}
 	template<class Integral, class = typename std::enable_if<std::is_integral<Integral>::value>::type>
- [[nodiscard]] inline Integral get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<Integral>) {
-		return get_col_from_db(stmt, inx, result_type<sqlite3_int64>());
+	[[nodiscard]] inline Integral get_col_from_db(sqlite3_stmt* stmt, int inx, result_type<Integral>) {
+		// The caller chose the type; narrowing to it is deliberate (LLP64
+		// targets have a 32-bit long).
+		return static_cast<Integral>(get_col_from_db(stmt, inx, result_type<sqlite3_int64>()));
 	}
 	template<class Integral, class = typename std::enable_if<std::is_integral<Integral>::value>::type>
- [[nodiscard]] inline Integral get_val_from_db(sqlite3_value *value, result_type<Integral>) {
-		return get_val_from_db(value, result_type<sqlite3_int64>());
+	[[nodiscard]] inline Integral get_val_from_db(sqlite3_value *value, result_type<Integral>) {
+		return static_cast<Integral>(get_val_from_db(value, result_type<sqlite3_int64>()));
 	}
 
 	// vector<T, A>

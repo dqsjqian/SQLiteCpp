@@ -9,120 +9,109 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Toolchain policy: every compiler is the newest stable release.
+#
+#   GCC 16      official gcc:16 image (GCC 16.2, built from the release tarball)
+#   LLVM 23     apt.llvm.org on Linux, the LLVM release MSI on Windows
+#   MSVC        Visual Studio 2026 on windows-latest
+#   AppleClang  newest released Xcode installed on macos-latest
+#   Android     newest NDK on the image (r30)
+#   MinGW-w64   MSYS2 UCRT64, packages updated at job start
+#
+# Bumping a major version: change GCC_VERSION together with every `gcc:` image
+# tag below (the setup script fails if they disagree), or LLVM_VERSION together
+# with LLVM_WINDOWS_RELEASE.
 env:
-  # Strict warnings are an error on every toolchain: -Wall -Wextra -Wpedantic
-  # -Werror for GCC/Clang, /W4 /WX /permissive- for MSVC and clang-cl.
+  GCC_VERSION: "16"
+  LLVM_VERSION: "23"
+  LLVM_WINDOWS_RELEASE: "23.1.4"
+  # Warnings are errors on every toolchain: -Wall -Wextra -Wpedantic -Werror for
+  # GCC/Clang, /W4 /WX /permissive- for MSVC and clang-cl.
   STRICT: -DSQLITECPP_WARNINGS_AS_ERRORS=ON
-  # apt is only used where the runner image lacks a package. Retries and
-  # timeouts keep a slow mirror from stalling a job.
+  # Retries and timeouts keep a slow mirror from stalling a job.
   APT: sudo apt-get -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=300
 
 jobs:
-  # Runner policy: every job uses a `-latest` label, and Linux jobs detect the
-  # newest GCC / LLVM preinstalled on the image (.github/scripts/select-toolchain.sh)
-  # instead of hardcoding a version: ubuntu-latest moves from 24.04 to 26.04
-  # between 2026-10-19 and 2026-11-19, so either image may serve a job.
-  # The ARM jobs have no `-latest` alias and use the newest GA ARM images.
-  #
-  # Newest GCC and Clang, both build types, both standard libraries.
-  linux:
-    name: linux-${{ matrix.compiler }}-${{ matrix.build_type }}${{ matrix.stdlib == 'libc++' && '-libcxx' || '' }}
+  # GCC 16 on x86-64: tests, header self-containment, install + downstream consumer.
+  linux-gcc:
+    name: linux-gcc-Release
+    runs-on: ubuntu-latest
+    container: gcc:16
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up GCC
+        run: .github/scripts/setup-gcc-container.sh
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DBUILD_TESTING=ON $STRICT -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -- -k 0
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Every public header compiles on its own
+        run: .github/scripts/check-headers.sh "$CXX"
+      - name: Install and verify a downstream consumer
+        run: |
+          cmake --install build --prefix "$PWD/stage"
+          cmake -S tests/installed -B build-consumer -G Ninja -DCMAKE_PREFIX_PATH="$PWD/stage"
+          cmake --build build-consumer -- -k 0
+          ctest --test-dir build-consumer --output-on-failure
+
+  # Clang 23 on x86-64: both build types, libstdc++ and libc++.
+  linux-clang:
+    name: linux-clang-${{ matrix.build_type }}${{ matrix.stdlib == 'libc++' && '-libcxx' || '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { compiler: gcc, build_type: Release, stdlib: default }
-          - { compiler: clang, build_type: Release, stdlib: default }
-          - { compiler: clang, build_type: Debug, stdlib: default }
-          - { compiler: clang, build_type: Release, stdlib: libc++ }
+          - { build_type: Release, stdlib: default }
+          - { build_type: Debug, stdlib: default }
+          - { build_type: Release, stdlib: libc++ }
     steps:
       - uses: actions/checkout@v7
-      - name: Select the newest preinstalled toolchain
-        run: .github/scripts/select-toolchain.sh default=${{ matrix.compiler == 'gcc' && 'gcc' || 'llvm' }}
-      - name: Install libc++
-        if: matrix.stdlib == 'libc++'
-        run: |
-          $APT update
-          $APT install "libc++-$LLVM_VER-dev" "libc++abi-$LLVM_VER-dev"
-      - name: Show the toolchain
-        run: $CXX --version | head -1
+      - name: Set up LLVM
+        run: .github/scripts/install-llvm.sh ${{ matrix.stdlib == 'libc++' && 'libcxx' || '' }}
       - name: Configure
         run: >-
           cmake -S . -B build -G Ninja -DBUILD_TESTING=ON $STRICT
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           ${{ matrix.stdlib == 'libc++' && '-DCMAKE_CXX_FLAGS=-stdlib=libc++' || '' }}
       - name: Build
-        run: cmake --build build
+        run: cmake --build build -- -k 0
       - name: Test
         run: ctest --test-dir build --output-on-failure
-      - name: Install and verify a downstream consumer
-        if: matrix.compiler == 'gcc'
-        run: |
-          cmake --install build --prefix "$PWD/stage"
-          cmake -S tests/installed -B build-consumer -G Ninja -DCMAKE_PREFIX_PATH="$PWD/stage"
-          cmake --build build-consumer
-          ctest --test-dir build-consumer --output-on-failure
+      - name: Every public header compiles on its own
+        if: matrix.build_type == 'Release' && matrix.stdlib == 'default'
+        run: .github/scripts/check-headers.sh "$CXX"
 
-  # Native 64-bit ARM Linux: build and run the suite on real hardware.
-  # There is no ubuntu-latest-arm alias; 26.04 is the newest GA ARM image.
+  # Native 64-bit ARM Linux with GCC 16: build and run the suite on real
+  # hardware. There is no ubuntu-latest-arm alias; 26.04 is the newest ARM image.
   linux-arm64:
     name: linux-arm64-gcc
     runs-on: ubuntu-26.04-arm
+    container: gcc:16
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - name: Select the newest preinstalled GCC
-        run: .github/scripts/select-toolchain.sh default=gcc
-      - name: Show the toolchain
-        run: $CXX --version | head -1
+      - name: Set up GCC
+        run: .github/scripts/setup-gcc-container.sh
       - name: Configure
-        run: cmake -S . -B build -DBUILD_TESTING=ON $STRICT -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -G Ninja -DBUILD_TESTING=ON $STRICT -DCMAKE_BUILD_TYPE=Release
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build build -- -k 0
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
-  # Every public header must compile on its own, under both compilers.
-  headers:
-    name: header-self-containment
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-      - name: Select the newest preinstalled toolchains
-        run: .github/scripts/select-toolchain.sh gcc llvm
-      - name: Compile each header in isolation
-        run: |
-          status=0
-          for compiler in "$GCC_CXX" "$CLANG_CXX"; do
-            for header in include/SQLiteCpp.h include/SQLiteCpp/*.h include/SQLiteCpp/detail/*.h; do
-              case "$header" in
-                include/SQLiteCpp/sqlcipher.h) continue ;;  # needs the SQLCipher extension
-              esac
-              printf '#include <%s>\nint main() { return 0; }\n' "${header#include/}" > /tmp/header_check.cc
-              if ! $compiler -std=c++23 -Iinclude -Ivendor/sqlite -Wall -Wextra -Wpedantic -Werror \
-                   -fsyntax-only /tmp/header_check.cc; then
-                echo "::error file=$header::not self-contained under $compiler"
-                status=1
-              fi
-            done
-          done
-          exit $status
-
-  # macos-latest follows GitHub's current GA macOS image.
   macos:
     name: macos-appleclang
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - name: Show the toolchain
-        run: |
-          sw_vers -productVersion
-          xcodebuild -version | head -1
-          clang++ --version | head -1
+      - name: Select the newest Xcode
+        run: .github/scripts/select-xcode.sh
       - name: Configure
         run: cmake -S . -B build -DBUILD_TESTING=ON $STRICT -DCMAKE_BUILD_TYPE=Release
       - name: Build
@@ -144,11 +133,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - name: Show the toolchain
+      - name: Select the newest Xcode
         run: |
-          sw_vers -productVersion
-          xcodebuild -version | head -1
-          xcrun --sdk iphonesimulator --show-sdk-version
+          .github/scripts/select-xcode.sh
+          echo "iOS simulator SDK $(xcrun --sdk iphonesimulator --show-sdk-version)"
       - name: Configure for the iOS simulator
         run: >-
           cmake -S . -B build -DBUILD_TESTING=ON $STRICT
@@ -180,35 +168,67 @@ jobs:
           -DANDROID_ABI=${{ matrix.abi }}
           -DANDROID_PLATFORM=android-24
       - name: Build
-        run: cmake --build build
+        run: cmake --build build -- -k 0
 
-  # Visual Studio 2026: MSVC and clang-cl on x64 (windows-latest), MSVC on
-  # native ARM64 (no -latest alias; the newest GA ARM image with VS 2026).
-  windows:
-    name: windows-${{ matrix.name }}
+  # Visual Studio 2026 MSVC on x64 (windows-latest) and native ARM64 (no
+  # -latest alias; the newest ARM image with VS 2026).
+  windows-msvc:
+    name: windows-MSVC-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: MSVC-x64, runner: windows-latest, toolset: '' }
-          - { name: ClangCL-x64, runner: windows-latest, toolset: ClangCL }
-          - { name: MSVC-arm64, runner: windows-11-vs2026-arm, toolset: '' }
+          - { arch: x64, runner: windows-latest }
+          - { arch: arm64, runner: windows-11-vs2026-arm }
     steps:
       - uses: actions/checkout@v7
       - name: Configure
-        shell: bash
-        run: |
-          args=(-S . -B build -DBUILD_TESTING=ON $STRICT)
-          if [ -n "${{ matrix.toolset }}" ]; then
-            args+=(-T "${{ matrix.toolset }}")
-          fi
-          cmake "${args[@]}"
+        run: cmake -S . -B build -DBUILD_TESTING=ON $env:STRICT
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+
+  # clang-cl from the LLVM 23 release (Visual Studio bundles an older Clang),
+  # against the Visual Studio 2026 headers and libraries.
+  windows-clang-cl:
+    name: windows-clang-cl-x64
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up LLVM
+        run: |
+          $release = $env:LLVM_WINDOWS_RELEASE
+          if (-not $release.StartsWith("$env:LLVM_VERSION.")) {
+            throw "LLVM_WINDOWS_RELEASE $release does not match LLVM_VERSION $env:LLVM_VERSION"
+          }
+          $msi = Join-Path $env:RUNNER_TEMP "LLVM-$release-win64.msi"
+          Invoke-WebRequest -MaximumRetryCount 5 -RetryIntervalSec 10 -OutFile $msi `
+            "https://github.com/llvm/llvm-project/releases/download/llvmorg-$release/LLVM-$release-win64.msi"
+          # Administrative install: unpack only, so the LLVM preinstalled on the
+          # image is neither replaced nor picked up by accident.
+          $target = Join-Path $env:RUNNER_TEMP 'llvm'
+          $unpack = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/a', "`"$msi`"", '/qn', "TARGETDIR=`"$target`"")
+          if ($unpack.ExitCode -ne 0) { throw "msiexec exited with $($unpack.ExitCode)" }
+          $clang = Get-ChildItem $target -Recurse -Filter clang-cl.exe | Select-Object -First 1
+          if (-not $clang) { throw 'clang-cl.exe not found in the LLVM package' }
+          & $clang.FullName --version
+          "CLANG_CL=$($clang.FullName -replace '\\', '/')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Configure
+        run: >-
+          cmake -S . -B build -G Ninja -DBUILD_TESTING=ON $env:STRICT
+          -DCMAKE_BUILD_TYPE=Release
+          "-DCMAKE_C_COMPILER=$env:CLANG_CL" "-DCMAKE_CXX_COMPILER=$env:CLANG_CL"
+      - name: Build
+        run: cmake --build build -- -k 0
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
 
   # MinGW-w64 (GCC, UCRT runtime) from MSYS2, running natively on Windows.
   mingw:
@@ -230,32 +250,38 @@ jobs:
         run: |
           g++ --version | head -1
           cmake -S . -B build -G Ninja -DBUILD_TESTING=ON $STRICT -DCMAKE_BUILD_TYPE=Release
-          cmake --build build
+          cmake --build build -- -k 0
           ctest --test-dir build --output-on-failure
 
+  # AddressSanitizer + UndefinedBehaviorSanitizer with GCC 16. LeakSanitizer
+  # stops threads through ptrace, which a container only allows with the
+  # capability below.
   sanitizers:
     name: asan-ubsan
     runs-on: ubuntu-latest
+    container:
+      image: gcc:16
+      options: --cap-add=SYS_PTRACE
     timeout-minutes: 30
     env:
       SAN: -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
     steps:
       - uses: actions/checkout@v7
-      - name: Select the newest preinstalled GCC
-        run: .github/scripts/select-toolchain.sh default=gcc
-      - name: Configure with AddressSanitizer and UndefinedBehaviorSanitizer
+      - name: Set up GCC
+        run: .github/scripts/setup-gcc-container.sh
+      - name: Configure
         run: >-
           cmake -S . -B build -G Ninja -DBUILD_TESTING=ON $STRICT
           -DCMAKE_BUILD_TYPE=Debug
           -DCMAKE_C_FLAGS="$SAN" -DCMAKE_CXX_FLAGS="$SAN"
           -DCMAKE_EXE_LINKER_FLAGS="$SAN"
       - name: Build
-        run: cmake --build build
+        run: cmake --build build -- -k 0
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
   # One connection shared by several threads (tests/concurrency.cc) plus the
-  # whole suite under ThreadSanitizer.
+  # whole suite under ThreadSanitizer, with Clang 23.
   tsan:
     name: tsan
     runs-on: ubuntu-latest
@@ -265,53 +291,39 @@ jobs:
       TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
     steps:
       - uses: actions/checkout@v7
-      - name: Select the newest preinstalled Clang
-        run: .github/scripts/select-toolchain.sh default=llvm
+      - name: Set up LLVM
+        run: .github/scripts/install-llvm.sh runtime
       - name: Keep ASLR entropy within what ThreadSanitizer supports
         run: sudo sysctl -w vm.mmap_rnd_bits=28
-      - name: Configure with ThreadSanitizer
+      - name: Configure
         run: >-
           cmake -S . -B build -G Ninja -DBUILD_TESTING=ON $STRICT
           -DCMAKE_BUILD_TYPE=Debug
           -DCMAKE_C_FLAGS="$TSAN" -DCMAKE_CXX_FLAGS="$TSAN"
           -DCMAKE_EXE_LINKER_FLAGS="$TSAN"
       - name: Build
-        run: cmake --build build
+        run: cmake --build build -- -k 0
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
-  # clang-tidy, coverage, a short fuzz run and the API docs. Each step fails
-  # the job on its own; none of them only prints.
-  quality:
-    name: quality-gates
+  # Line coverage of include/ with GCC 16 and lcov.
+  coverage:
+    name: coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    container: gcc:16
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - name: Select the newest preinstalled toolchains
-        run: .github/scripts/select-toolchain.sh gcc llvm
-      - name: Install the tools
+      - name: Set up GCC and lcov
+        run: .github/scripts/setup-gcc-container.sh lcov
+      - name: Build and test with coverage instrumentation
         run: |
-          $APT update
-          $APT install lcov doxygen "libclang-rt-$LLVM_VER-dev"
-      - name: clang-tidy (every finding is an error, see .clang-tidy)
+          cmake -S . -B build -G Ninja -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug -DSQLITECPP_COVERAGE=ON
+          cmake --build build -- -k 0
+          ctest --test-dir build --output-on-failure
+      - name: Report
         run: |
-          cmake -S . -B build-tidy -G Ninja -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_C_COMPILER=$CLANG_CC -DCMAKE_CXX_COMPILER=$CLANG_CXX \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-          for source in tests/maintenance_regression.cpp tests/concurrency.cc benchmarks/benchmark.cc fuzz/fuzz_sql.cc; do
-            echo "::group::clang-tidy $source"
-            "$CLANG_TIDY" -p build-tidy "$source"
-            echo "::endgroup::"
-          done
-      - name: Coverage
-        run: |
-          cmake -S . -B build-cov -G Ninja -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_C_COMPILER=$GCC_CC -DCMAKE_CXX_COMPILER=$GCC_CXX \
-            -DSQLITECPP_COVERAGE=ON
-          cmake --build build-cov
-          ctest --test-dir build-cov --output-on-failure
-          lcov --gcov-tool "$GCOV_TOOL" --capture --directory build-cov --output-file coverage.info \
+          lcov --gcov-tool "$GCOV_TOOL" --capture --directory build --output-file coverage.info \
             --ignore-errors mismatch,inconsistent,unused,negative
           lcov --gcov-tool "$GCOV_TOOL" --extract coverage.info '*/include/SQLiteCpp/*' '*/include/SQLiteCpp.h' \
             --output-file coverage.info --ignore-errors unused
@@ -322,11 +334,35 @@ jobs:
             cat coverage-summary.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # clang-tidy 23, a short fuzz run and the API docs. Each step fails the job
+  # on its own; none of them only prints.
+  quality:
+    name: quality-gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up LLVM
+        run: .github/scripts/install-llvm.sh tidy runtime
+      - name: Install Doxygen
+        run: |
+          $APT update
+          $APT install doxygen
+      - name: clang-tidy (every finding is an error, see .clang-tidy)
+        run: |
+          "$CLANG_TIDY" --version | head -2
+          cmake -S . -B build-tidy -G Ninja -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          for source in tests/maintenance_regression.cpp tests/concurrency.cc benchmarks/benchmark.cc fuzz/fuzz_sql.cc; do
+            echo "::group::clang-tidy $source"
+            "$CLANG_TIDY" -p build-tidy "$source"
+            echo "::endgroup::"
+          done
       - name: Fuzz the SQL front end for 60 seconds
         run: |
           cmake -S . -B build-fuzz -G Ninja -DBUILD_TESTING=ON -DSQLITECPP_BUILD_FUZZERS=ON \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_C_COMPILER=$CLANG_CC -DCMAKE_CXX_COMPILER=$CLANG_CXX \
             -DCMAKE_C_FLAGS="-fsanitize=address,undefined" \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined"
           cmake --build build-fuzz --target sqlitecpp_fuzz_sql
