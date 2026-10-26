@@ -157,35 +157,43 @@ between runs, and each figure is the median of nine runs.
 | Path | Time | Per operation | vs. raw C API |
 |---|---|---|---|
 | **INSERT** (one transaction) | | | |
-| Raw C API, one prepared statement reused | 20.7 ms | 207 ns | baseline |
-| `db << sql << ...` per row, statement cache (default) | 24.0 ms | 240 ns | +16% |
-| `db << sql << ...` per row, cache disabled | 136.0 ms | 1.36 µs | +557% (6.6x slower) |
-| Held statement, rebound per row | 21.2 ms | 212 ns | +2% |
-| `execute_many` | 20.5 ms | 205 ns | -1% (level) |
+| Raw C API, one prepared statement reused | 20.3 ms | 203 ns | baseline |
+| `db << sql << ...` per row, statement cache (default) | 23.6 ms | 236 ns | +16% |
+| `db << sql << ...` per row, cache disabled | 69.3 ms | 693 ns | +242% (3.4x slower) |
+| Held statement, rebound per row | 21.0 ms | 210 ns | +4% |
+| `execute_many` | 20.5 ms | 205 ns | +1% (level) |
 | **Single-row lookup by primary key** (TEXT result) | | | |
-| Raw C API, one prepared statement reused | 22.9 ms | 229 ns | baseline |
-| Raw C API, also stepping once more to `SQLITE_DONE` | 25.0 ms | 250 ns | +9% |
-| `db << sql << id >> value` per row | 27.8 ms | 278 ns | +21% |
-| Held statement, `query << id >> value` | 25.7 ms | 257 ns | +12% |
+| Raw C API, one prepared statement reused | 23.0 ms | 230 ns | baseline |
+| Raw C API, also stepping once more to `SQLITE_DONE` | 25.3 ms | 253 ns | +10% |
+| `db << sql << id >> value` per row | 28.0 ms | 280 ns | +22% |
+| Held statement, `query << id >> value` | 26.0 ms | 260 ns | +13% |
 | **Full scan** (INTEGER + TEXT per row) | | | |
-| Raw C API, step loop | 7.1 ms | 71 ns | baseline |
-| `db << sql >> [](int, const std::string &)` | 7.4 ms | 74 ns | +4% |
-| `for (auto &&row : db << sql) row.as<int, std::string>()` | 7.3 ms | 73 ns | +3% |
-| `select<record>(...)` (the C side stores into a vector too) | 7.6 ms | 76 ns | +1% |
+| Raw C API, step loop | 7.2 ms | 72 ns | baseline |
+| `db << sql >> [](int, const std::string &)` | 7.3 ms | 73 ns | +2% |
+| `for (auto &&row : db << sql) row.as<int, std::string>()` | 7.3 ms | 73 ns | +1% |
+| `select<record>(...)` (the C side stores into a vector too) | 7.6 ms | 76 ns | level |
 
 The same benchmark against a database file in WAL mode keeps the ratios:
-per-row INSERT +10%, held statement -3%, `execute_many` -2%, single-row lookup
-+8% (four of those points are the single-row check itself), scans +3% to -1%.
+per-row INSERT +13%, held statement +3%, `execute_many` level, cache disabled
++192%, single-row lookup +7% (five of those points are the single-row check
+itself), scans +1% to +2%.
 
 How to read it:
 
 - **The per-row expression syntax costs about 33 ns**: one statement object,
   one cache lookup (a single comparison on a hit) and one connection lock.
   That is exactly what `execute_many` and a held statement remove.
-- **Nine of the +21% on a single-row `>>` are semantics, not overhead**: it
+- **Ten of the +22% on a single-row `>>` are semantics, not overhead**: it
   steps once more to prove the result really is a single row and otherwise
-  throws `more_rows` at once. A C loop doing the same check pays the same nine
+  throws `more_rows` at once. A C loop doing the same check pays the same ten
   points. The remaining twelve are the cache lookup and the statement object.
+- **The cache-disabled row is a counter-example, not advice**: every row
+  recompiles its SQL, and 693 ns is almost entirely compile cost; the cache
+  takes that to 236 ns (1/2.9). Statements the cache does not keep are
+  compiled without `SQLITE_PREPARE_PERSISTENT` — that hint is for statements
+  kept and reused for a long time, and with a one-shot statement it only makes
+  SQLite allocate outside the connection's lookaside memory. To save memory
+  set the capacity to 1 to 4, not 0.
 - **Scans cost next to nothing**: one SQLite call per column value (SQL NULL
   already reads as 0 or empty, so the type is not queried separately); three
   columns end up within 1 to 4 ns per row of the hand-written C loop.
@@ -196,7 +204,8 @@ How to read it:
   ceiling the C API sets.
 
 Against 1.1.1 on the same machine and the same benchmark: per-row INSERT +24%
-→ +16%, single-row lookup +36% → +21%, full scan +29% → +3%.
+→ +16%, single-row lookup +36% → +22%, full scan +29% → +1%, cache disabled
++557% → +242%.
 
 ## Platforms
 

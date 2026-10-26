@@ -668,6 +668,47 @@ static void run_suite() {
         }
         CHECK(total == 0 + 1 + 2 + 0);
     }
+
+    // ---- cache capacity 0, 1 and eviction stay correct -------------------
+    // A capacity of 0 compiles and finalizes every statement (uncached
+    // statements are compiled without SQLITE_PREPARE_PERSISTENT); a small
+    // capacity evicts. Both must behave exactly like a large cache.
+    for(const std::size_t capacity : {std::size_t{0}, std::size_t{1}, std::size_t{2}}) {
+        sqlite::sqlite_config config;
+        config.statement_cache_size = capacity;
+        sqlite::database small(":memory:", config);
+        small << "CREATE TABLE c (v INTEGER)";
+        small << "BEGIN";
+        for(int i = 0; i < 50; ++i) small << "INSERT INTO c VALUES (?)" << i;
+        small << "COMMIT";
+        // Two different statements per round: at capacity 1 each one evicts
+        // the other, at capacity 0 neither is kept at all.
+        int total = 0;
+        for(int i = 0; i < 5; ++i) {
+            int value = -1;
+            small << "SELECT COUNT(*) FROM c WHERE v < ?" << 50 >> value;
+            total += value;
+            small << "SELECT v FROM c WHERE v = ?" << i >> value;
+            total += value;
+        }
+        CHECK(total == 5 * 50 + (0 + 1 + 2 + 3 + 4));
+        // Nested use of the same SQL: the inner statement gets its own,
+        // whether the cache holds anything or not.
+        int pairs = 0;
+        small << "SELECT v FROM c" >> [&](int outer) {
+            small << "SELECT v FROM c" >> [&](int inner) {
+                pairs += (outer >= 0 && inner >= 0) ? 1 : 0;
+            };
+        };
+        CHECK(pairs == 50 * 50);
+        // A held statement keeps working across cache bypasses.
+        auto held = small << "SELECT v FROM c WHERE v = ?";
+        for(int i = 0; i < 3; ++i) {
+            int value = -1;
+            held << i >> value;
+            CHECK(value == i);
+        }
+    }
 }
 
 int main() {
