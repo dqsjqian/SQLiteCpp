@@ -104,6 +104,23 @@ int main() {
     std::printf("execute_many inserts=%lld  %.1f ms  (%.2f us/op)\n",
                 static_cast<long long>(batch_count), batch_ms, batch_ms * 1000.0 / inserts);
 
+    // Reused binder: the exact equivalent of holding a C statement. No cache
+    // lookup and no binder construction per row.
+    sqlite::database reuse_db(":memory:");
+    reuse_db << "CREATE TABLE bench (id INTEGER PRIMARY KEY, value TEXT)";
+    auto reused = reuse_db << "INSERT INTO bench VALUES (?, ?)";
+    const auto reuse_start = clock_type::now();
+    reuse_db << "BEGIN";
+    for(int i = 0; i < inserts; ++i) {
+        const std::string payload = "payload-" + std::to_string(i);
+        reused << i << payload;
+        reused.execute();
+    }
+    reuse_db << "COMMIT";
+    const double reuse_ms = ms_since(reuse_start);
+    std::printf("reused binder  inserts=%d  %.1f ms  (%.2f us/op)\n",
+                inserts, reuse_ms, reuse_ms * 1000.0 / inserts);
+
     // Wrapper overhead against the C API baseline.
     const auto raw = bench_raw_c(inserts, selects);
     std::printf("\nraw C API      inserts=%.1f ms  selects=%.1f ms\n", raw.insert_ms, raw.select_ms);
@@ -111,5 +128,7 @@ int main() {
     std::printf("overhead       inserts=%+.1f%%  selects=%+.1f%%\n",
                 (insert_ms - raw.insert_ms) / raw.insert_ms * 100.0,
                 (select_ms - raw.select_ms) / raw.select_ms * 100.0);
+    std::printf("reused binder  overhead=%+.1f%%\n",
+                (reuse_ms - raw.insert_ms) / raw.insert_ms * 100.0);
     return 0;
 }

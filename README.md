@@ -108,54 +108,19 @@ bundled SQLite 3.54.1:
 | 100k INSERT via `execute_many` | — | 61.3 ms (0.61 µs/op) | 3.71x |
 
 Wrapper overhead against a hand-written C API loop, same workload, statement
-reused in both cases:
+reused in both cases, median of three runs:
 
 | Path | Raw C API | SQLiteCpp | Overhead |
 |---|---|---|---|
-| 100k single-row INSERT | 23.3 ms | 30.4 ms | +30% |
-| 100k single-row SELECT | 20.0 ms | 29.4 ms | +47% |
-| 100k batched INSERT | — | 23.0 ms | faster than per-row C |
+| 100k single-row INSERT, `db << sql` each row | 22.8 ms | 27.0 ms | +18% |
+| 100k single-row SELECT, `db << sql` each row | 19.8 ms | 26.5 ms | +32% |
+| 100k single-row INSERT, reused binder | 22.8 ms | 25.9 ms | +13% |
+| 100k batched INSERT, `execute_many` | — | 22.8 ms | faster than the C loop |
 
-The per-row gap is the cost of the expression syntax: one binder object, one
-cache lookup and a second step to verify a single-row result really is single.
-`execute_many` skips all of that and beats the per-row C loop. As statements
-grow wider the relative gap shrinks; `benchmarks/benchmark.cc` reproduces both.
-
-The full suite also runs clean under AddressSanitizer and
-UndefinedBehaviorSanitizer, and CI adds clang-tidy, lcov coverage, a 30-second
-libFuzzer run and the Doxygen API docs.
-
-## Layout
-
-| Path | Contents |
-|---|---|
-| `include/SQLiteCpp.h` | single include entry point |
-| `include/SQLiteCpp/config.h` | version macros, C++23 requirement |
-| `include/SQLiteCpp/types.h` | `str_ref`, `u16str_ref` |
-| `include/SQLiteCpp/errors.h` | exception hierarchy with error offsets |
-| `include/SQLiteCpp/fwd.h` | forward declarations, `bindable` concept, flags |
-| `include/SQLiteCpp/binder.h` | stream binder, row iteration, tuple extraction |
-| `include/SQLiteCpp/database.h` | connection, cache wiring, bulk and snapshot APIs |
-| `include/SQLiteCpp/transaction.h` | RAII transactions |
-| `include/SQLiteCpp/sql_function.h` | SQL function registration |
-| `include/SQLiteCpp/detail/` | value traits, statement cache, UTF conversion |
-| `include/SQLiteCpp/backup.h` | online backup between connections |
-| `include/SQLiteCpp/blob.h` | incremental BLOB I/O |
-| `include/SQLiteCpp/diagnostics.h` | database file header decoding |
-| `include/SQLiteCpp/literals.h` | `_sql` literals |
-| `fuzz/` | libFuzzer target |
-| `docs/` | Doxygen configuration |
-| `benchmarks/` | micro-benchmarks |
-| `vendor/sqlite/` | bundled SQLite 3.54.1 amalgamation |
-| `tests/` | regression suite and installed-consumer project |
-
-## Requirements
-
-The headers require C++23 and SQLite 3.38 or newer. The repository vendors the
-official SQLite 3.54.1 amalgamation in `vendor/sqlite` and the test suite always
-builds that copy — there is no switch to substitute a different SQLite. An
-installed package links the SQLite the consumer provides, which must be 3.38 or
-newer; older versions are rejected at compile time with a clear message.
+Where the per-row cost goes: one binder object, one cache lookup, and a second
+`step` that verifies a single-row result really is single. Holding the binder
+(``auto stmt = db << "..."; stmt << ...; stmt.execute();``) removes the lookup
+and lands at +13%. `execute_many` removes all of it and beats the C loop.
 
 ## Platforms
 

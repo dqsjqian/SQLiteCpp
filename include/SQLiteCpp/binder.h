@@ -102,10 +102,14 @@ namespace sqlite {
 		int _inx = 0;
 
 		bool execution_started = false;
+		// Set by execute(), cleared by any bind or iteration: tracks whether the
+		// statement is already reset.
+		bool _reset_done = true;
 
 		sqlite3_stmt *_stmt() const { return _slot ? _slot->stmt.get() : nullptr; }
 
 		int _next_index() {
+			_reset_done = false;
 			if(execution_started && !_inx) {
 				sqlite3_reset(_stmt());
 				sqlite3_clear_bindings(_stmt());
@@ -145,7 +149,7 @@ namespace sqlite {
 			if(!used() && !_has_uncaught_exception && _slot) {
 				execute();
 			}
-			if(_slot && !_owned) _cache->release(_slot);
+			if(_slot && !_owned) _cache->release(_slot, !_reset_done);
 			_owned.reset();
 		}
 
@@ -276,6 +280,11 @@ namespace sqlite {
 			}
 		}
 		execution_started = true;
+		// Make the binder reusable straight away: the next bind starts at
+		// parameter 1 and no stale bindings survive.
+		_inx = 0;
+		if(_stmt()) sqlite3_reset(_stmt());
+		_reset_done = true;
 	}
 	namespace detail {
 		template<class T> using void_t = void;

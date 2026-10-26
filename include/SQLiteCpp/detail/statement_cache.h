@@ -69,12 +69,14 @@ namespace sqlite {
 			// Called when the owning binder is done with the statement. Cached
 			// slots stay resident; uncached ones are finalized when the last
 			// owner drops them.
-			void release(statement_slot *slot) {
+			// `needs_reset` is false when the owner already reset the statement
+			// (execute() does) or never stepped it.
+			void release(statement_slot *slot, bool needs_reset = true) {
 				if(!slot) return;
-				// Reset here, exactly once: a statement left in the DONE state
-				// keeps SQLite from opening savepoints or committing ("SQL
-				// statements in progress").
-				reset(slot);
+				// A statement left in the DONE state keeps SQLite from opening
+				// savepoints or committing ("SQL statements in progress"), so
+				// this must happen exactly once per execution.
+				if(needs_reset) reset(slot);
 				slot->in_use = false;
 			}
 
@@ -89,11 +91,10 @@ namespace sqlite {
 				std::unique_ptr<statement_slot> slot;
 			};
 
+			// Reset only: the streaming binder binds every parameter on the
+			// next use, and SQLite treats an unbound parameter as NULL.
 			static void reset(statement_slot *slot) {
-				if(slot && slot->stmt) {
-					sqlite3_reset(slot->stmt.get());
-					sqlite3_clear_bindings(slot->stmt.get());
-				}
+				if(slot && slot->stmt) sqlite3_reset(slot->stmt.get());
 			}
 
 			std::pair<statement_slot *, bool> store(const std::string& key, str_ref sql) {
