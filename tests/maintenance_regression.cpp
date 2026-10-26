@@ -63,4 +63,50 @@ int main() {
 #ifdef SQLITECPP_BUNDLED_SQLITE
     CHECK(sqlite3_libversion_number() == 3054001);
 #endif
+
+    // execute_many: one prepare, N executions
+    db << "CREATE TABLE batch (id INTEGER, label TEXT)";
+    const std::vector<std::tuple<int, std::string>> batch_rows{
+        {1, "one"}, {2, "two"}, {3, "three"}};
+    const auto inserted = db.execute_many("INSERT INTO batch VALUES (?, ?)", batch_rows);
+    CHECK(inserted == 3);
+    db << "SELECT COUNT(*) FROM batch" >> result;
+    CHECK(result == 3);
+
+    // transaction: rolls back on scope exit unless committed
+    {
+        sqlite::transaction tx(db);
+        db << "INSERT INTO batch VALUES (99, 'rolled-back')";
+    }
+    db << "SELECT COUNT(*) FROM batch" >> result;
+    CHECK(result == 3);
+
+    {
+        sqlite::transaction tx(db, sqlite::transaction_behavior::immediate);
+        db << "INSERT INTO batch VALUES (100, 'committed')";
+        tx.commit();
+    }
+    db << "SELECT COUNT(*) FROM batch" >> result;
+    CHECK(result == 4);
+
+    // try_execute: value-based error reporting without exceptions
+    const auto ok = db.try_execute("SELECT ?", 7);
+    CHECK(ok.has_value());
+    const auto bad = db.try_execute("SELECT * FROM no_such_table");
+    CHECK(!bad.has_value() && !bad.error().empty());
+
+    // syntax errors carry a byte offset into the SQL text
+    bool offset_seen = false;
+    try {
+        db << "SELECT FROM" >> result;
+    } catch(const sqlite::sqlite_exception &error) {
+        offset_seen = error.get_error_offset() >= 0;
+    }
+    CHECK(offset_seen);
+
+    // public concept gates what may be bound
+    static_assert(sqlite::bindable<int>);
+    static_assert(sqlite::bindable<std::string_view>);
+    static_assert(sqlite::bindable<std::vector<unsigned char>>);
+    static_assert(!sqlite::bindable<void>);
 }

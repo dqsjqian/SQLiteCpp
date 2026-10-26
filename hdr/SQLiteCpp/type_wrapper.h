@@ -159,6 +159,8 @@ namespace sqlite {
 	// str_ref
 	template<>
 	struct has_sqlite_type<std::string, SQLITE3_TEXT, void> : std::true_type {};
+	template<>
+	struct has_sqlite_type<std::string_view, SQLITE3_TEXT, void> : std::true_type {};
 	inline int bind_col_in_db(sqlite3_stmt* stmt, int inx, str_ref val) {
 		return sqlite3_bind_text(stmt, inx, val.data(), val.length(), SQLITE_TRANSIENT);
 	}
@@ -191,6 +193,8 @@ namespace sqlite {
 	// u16str_ref
 	template<>
 	struct has_sqlite_type<std::u16string, SQLITE3_TEXT, void> : std::true_type {};
+	template<>
+	struct has_sqlite_type<std::u16string_view, SQLITE3_TEXT, void> : std::true_type {};
 	inline int bind_col_in_db(sqlite3_stmt* stmt, int inx, u16str_ref val) {
 		return sqlite3_bind_text16(stmt, inx, val.data(), sizeof(char16_t) * val.length(), SQLITE_TRANSIENT);
 	}

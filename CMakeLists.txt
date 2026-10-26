@@ -53,6 +53,10 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME sqlitecpp-maintained-api COMMAND sqlitecpp_regression)
 
+    add_executable(sqlitecpp_benchmark tests/benchmark.cc)
+    target_compile_features(sqlitecpp_benchmark PRIVATE cxx_std_23)
+    target_link_libraries(sqlitecpp_benchmark PRIVATE SQLiteCpp::SQLiteCpp ${SQLITECPP_SQLITE_TARGET})
+
     set(SQLITECPP_REGRESSION_TESTS
         blob_example error_log error_log2 exception_dont_execute
         exception_dont_execute_nested exceptions extended_exceptions
