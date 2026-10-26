@@ -9,6 +9,8 @@ Makefile
 
 tests/*
 !tests/*.cc
+!tests/*.cpp
+!tests/installed/
 
 build/
 .venv/
