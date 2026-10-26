@@ -1,0 +1,38 @@
+cmake_minimum_required(VERSION 3.21)
+project(SQLiteCpp VERSION 0.7.0 LANGUAGES CXX)
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+add_library(SQLiteCpp INTERFACE)
+add_library(SQLiteCpp::SQLiteCpp ALIAS SQLiteCpp)
+set_target_properties(SQLiteCpp PROPERTIES EXPORT_NAME SQLiteCpp)
+target_compile_features(SQLiteCpp INTERFACE cxx_std_23)
+target_include_directories(SQLiteCpp INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/hdr>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+install(TARGETS SQLiteCpp EXPORT SQLiteCppTargets)
+install(DIRECTORY hdr/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR} FILES_MATCHING PATTERN "*.h")
+install(EXPORT SQLiteCppTargets NAMESPACE SQLiteCpp:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SQLiteCpp)
+configure_package_config_file(cmake/SQLiteCppConfig.cmake.in ${CMAKE_CURRENT_BINARY_DIR}/SQLiteCppConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SQLiteCpp)
+write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/SQLiteCppConfigVersion.cmake
+    VERSION ${PROJECT_VERSION} COMPATIBILITY SameMajorVersion ARCH_INDEPENDENT)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/SQLiteCppConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/SQLiteCppConfigVersion.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SQLiteCpp)
+install(FILES cmake/SQLiteCpp-config.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SQLiteCpp)
+install(FILES License.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/SQLiteCpp)
+include(CTest)
+if(BUILD_TESTING)
+    if(FORGEDEPS_TEST_ENVIRONMENT)
+        find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+        set(ForgeDeps_PYTHON_EXECUTABLE "${Python3_EXECUTABLE}")
+        execute_process(COMMAND "${Python3_EXECUTABLE}" -m forgedeps cmake-dir
+            OUTPUT_VARIABLE _modules OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+        include("${_modules}/ForgeDeps.cmake")
+        forgedeps_use_environment(FILE "${FORGEDEPS_TEST_ENVIRONMENT}")
+    endif()
+    find_package(SQLite3 REQUIRED)
+    add_executable(sqlitecpp_regression tests/maintenance_regression.cpp)
+    target_compile_features(sqlitecpp_regression PRIVATE cxx_std_23)
+    target_link_libraries(sqlitecpp_regression PRIVATE SQLiteCpp::SQLiteCpp SQLite::SQLite3)
+    add_test(NAME sqlitecpp-maintained-api COMMAND sqlitecpp_regression)
+endif()

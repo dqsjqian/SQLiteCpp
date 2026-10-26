@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "dependencies": {
+    "sqlite3": {
+      "artifact": "archive",
+      "provider": "sqlite",
+      "resolved": {
+        "checksum_source": "sqlite.org download product CSV; SHA3-256 verified",
+        "request_hash": "6475282e97606e5b28123ec6fd3a0fb7b57a20dd41826a94f748678a8bbb6d67",
+        "requested": "latest",
+        "revision": "",
+        "sha256": "92281c86e2957f9b9305890f9ac04204caa7b677cc868dc326d942689df28e30",
+        "tag": "3.54.1",
+        "url": "https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip",
+        "version": "3.54.1"
+      }
+    }
+  }
+}
