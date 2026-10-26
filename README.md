@@ -20,8 +20,10 @@ int main() {
 
 ## Requirements
 
-The headers require C++23 and a separately provided SQLite library. Standard
-optional, variant and string-view support is always enabled.
+The headers require C++23. The repository vendors the official SQLite 3.54.1
+amalgamation in `vendor/sqlite`, and tests build and link it by default. Pass
+`-DSQLITECPP_BUNDLE_SQLITE=OFF` to link an external SQLite instead. Installed
+consumers supply their own SQLite library.
 
 ## Build & Install
 
@@ -32,10 +34,10 @@ ctest --test-dir build -C Release --output-on-failure
 cmake --install build --prefix /path/to/sdk
 ```
 
+The full regression suite (C++23, bundled SQLite 3.54.1) runs under `ctest`.
 Installed consumers can use `find_package(SQLiteCpp CONFIG REQUIRED)` and link
-`SQLiteCpp::SQLiteCpp` together with their SQLite target. SQLite itself is not
-bundled. ForgeRecipes can supply both libraries through a ForgeDeps workspace.
-Tests use a caller-provided SQLite installation.
+`SQLiteCpp::SQLiteCpp` together with their SQLite target. ForgeRecipes can
+supply both libraries through a ForgeDeps workspace.
 
 ## License
 
